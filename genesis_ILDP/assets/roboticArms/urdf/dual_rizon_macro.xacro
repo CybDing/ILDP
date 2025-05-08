@@ -1,0 +1,109 @@
+<?xml version="1.0"?>
+<robot xmlns:xacro="http://wiki.ros.org/xacro">
+
+  <xacro:macro name="rizon_robot" params="
+    prefix dual_type dual_mode">
+
+    <!-- 世界的环境,桌子和柱子 -->
+    <xacro:include filename="$(find flexiv_description)/urdf/world.xacro" />
+    <xacro:environment />
+
+    <xacro:include filename="$(find flexiv_description)/urdf/flexiv_arm_materials.xacro" />
+    <xacro:flexiv_arm_materials />
+    <xacro:include filename="$(find flexiv_description)/urdf/grav.xacro"/>
+
+
+    <xacro:arg name="use_nominal_extrinsics" default="false"/>
+    <xacro:include filename="$(find realsense2_description)/urdf/_d435i.urdf.xacro" />
+    
+
+    <joint name="mount_jointl" type="fixed">
+      <parent link="world_link_l"/>
+      <child link="mount_link_l" />
+      <!-- <origin xyz="0.0 0.125 0.0" rpy="-1.57079632679 0.0 0.0"/> -->
+      <origin xyz="0.0 0.1 0.0" rpy="-1.8326 0.0 0.0"/> 
+
+    </joint>
+    <link name="mount_link_l"/>
+
+    <joint name="world_jointl" type="fixed">
+      <parent link="world"/>
+      <child link="world_link_l" />
+      <origin xyz="0.0 0.006 0.0" rpy="0.0 0.0 0.0"/> 
+    </joint>
+    <link name="world_link_l"/>
+
+    <joint name="mount_jointr" type="fixed">
+      <parent link="world_link_r"/>
+      <child link="mount_link_r" />
+      <origin xyz="0.0 -0.1 0.0" rpy="1.8326 0.0 0.0"/>      
+    </joint>
+    <link name="mount_link_r"/>
+
+    <joint name="world_jointr" type="fixed">
+      <parent link="world_link_l"/>
+      <child link="world_link_r" />
+      <origin xyz="0.0 -0.012 0.0" rpy="0.0 0.0 0.0"/> 
+    </joint>
+    <link name="world_link_r"/>
+
+    <!-- 相机标定的结果,运行/home/jiaoda/wy/robot_arms/flexiv_ros_ws/src/dual_arm_robot/scripts/transform.py -->
+    <!-- <joint name="mount_jointr" type="fixed">
+      <parent link="mount_link_l"/>
+      <child link="mount_link_r" />
+      <origin rpy="-2.618447606189306 0.011019958912394816 0.002848390284717208" xyz="-0.013060362302636009 0.043699601184804426 -0.2061631332720316"/>      
+    </joint>
+    <link name="mount_link_r"/> -->
+
+
+    <xacro:if value="${dual_type=='right' or dual_type=='dual'}">
+      <!-- 右臂 -->
+      <!-- JOINTS-->
+      <joint name="r_base_joint" type="fixed">
+        <parent link="mount_link_r"/>
+        <child link="r_base_link" />
+        <origin xyz="0.0 0.0 0.0" rpy="0.0 0.0 0.0"/>
+        <!-- <origin xyz="0.0 -0.2 0.0" rpy="1.57079632679 0.0 0.0"/> -->
+      </joint>
+      <xacro:include filename="$(find flexiv_description)/urdf/dual_rizon4_joints_links.xacro" />
+      <xacro:rizon4mr_joints_links rizon_type="rizon4mr" prefix="r_" mesh_prefix_path="package://flexiv_description/" />
+      <!-- 右夹爪 -->
+      <joint name="r_rizon_grav_joint" type="fixed">
+        <parent link="r_flange"/>
+        <child link="r_grav_base_link"/>
+        <origin xyz="0 0 0" rpy="0 0 0.7504915783575618"/> <!--第三个数值是安装角度43度-->
+      </joint>
+
+      <xacro:grav mesh_prefix_path="package://flexiv_description/" prefix="r_"/>
+
+      <!-- <xacro:sensor_d435i parent="r_tcp" use_nominal_extrinsics="$(arg use_nominal_extrinsics)" >
+        <origin xyz="-0.0 0.15 -0.15" rpy="0 -1.57 1.57"/>
+      </xacro:sensor_d435i> -->
+
+
+    </xacro:if>
+
+    <xacro:if value="${dual_type=='left' or dual_type=='dual'}">
+      <!-- 左臂 -->
+      <!-- JOINTS-->
+      <joint name="l_base_joint" type="fixed">
+        <parent link="mount_link_l"/>
+        <child link="l_base_link" />
+        <origin xyz="0.0 0.0 0.0" rpy="0.0 0.0 0.0"/>
+        <!-- <origin xyz="0.0 0.2 0.0" rpy="-1.57079632679 0.0 0.0"/> -->
+      </joint>
+      <xacro:include filename="$(find flexiv_description)/urdf/rizon4_joints_links.xacro" />
+      <xacro:rizon4_joints_links rizon_type="rizon4" prefix="l_" mesh_prefix_path="package://flexiv_description/" />
+      <!-- 左夹爪 -->
+      <joint name="l_rizon_grav_joint" type="fixed">
+        <parent link="l_flange"/>
+        <child link="l_grav_base_link"/>
+        <origin xyz="0 0 0" rpy="0 0 0"/> 
+      </joint>
+      
+      <xacro:grav mesh_prefix_path="package://flexiv_description/" prefix="l_"/>
+    </xacro:if>
+
+  </xacro:macro>
+  
+</robot>

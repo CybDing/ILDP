@@ -1,0 +1,24 @@
+<?xml version="1.0" encoding="utf-8"?>
+
+<robot xmlns:xacro="http://www.ros.org/wiki/xacro" name="rizon">
+  <!-- Enable setting arguments from the launch file -->
+  <!-- 'rizon_type' values: rizon4, rizon4s, rizon10 -->
+  <xacro:arg name="dual_type" default="dual"/>
+  <xacro:arg name="dual_mode" default="separate"/>
+  <xacro:arg name="prefix" default="" />
+
+
+
+  <!-- import main macro -->
+  <!-- <xacro:include filename="$(find flexiv_description)/urdf/rizon_macro.xacro"/> -->
+  <xacro:include filename="$(find flexiv_description)/urdf/dual_rizon_macro.xacro"/>
+
+  <!-- parameters -->
+
+  <xacro:rizon_robot
+    prefix="$(arg prefix)"
+    dual_type="$(arg dual_type)"
+    dual_mode="$(arg dual_mode)"
+    />
+
+</robot>
