@@ -1,0 +1,299 @@
+<?xml version="1.0" ?>
+<robot xmlns:xacro="http://www.ros.org/wiki/xacro">
+
+  <!--
+    rizon_type = "rizon4", "rizon4s" "rizon4mr"
+    prefix = "", "left_" "right_"
+    mesh_prefix_path = "", "package://flexiv_description/"
+    NOTE: accurate kinematic but approximated dynamics parameters
+  -->
+  <xacro:macro name="rizon4mr_joints_links" params="rizon_type prefix mesh_prefix_path">
+    
+
+    <joint name="${prefix}joint1" type="revolute">
+      <parent link="${prefix}base_link"/>
+      <child link="${prefix}link1"/>
+      <origin xyz="0 0 0.155" rpy="0 ${pi} 0"/>
+      <axis xyz="0 0 1"/>
+      <limit effort="123" lower="-2.7925" upper="2.7925" velocity="2.094395"/>
+      <!-- <safety_controller k_velocity="1000000.0" k_position="1000000.0" soft_lower_limit="-1.57" soft_upper_limit="1.57"/>  -->
+      <!-- 加上这个可以设置安全限制 -->
+    </joint>
+
+    <joint name="${prefix}joint2" type="revolute">
+      <parent link="${prefix}link1"/>
+      <child link="${prefix}link2"/>
+      <origin xyz="0.0 0.03 -0.210" rpy="0 0 ${pi}"/>
+      <axis xyz="0 1 0"/>
+      <limit effort="123" lower="-2.2689" upper="2.2689" velocity="2.0944"/>
+    </joint>
+
+    <joint name="${prefix}joint3" type="revolute">
+      <parent link="${prefix}link2"/>
+      <child link="${prefix}link3"/>
+      <origin xyz="0.0 -0.035 -0.205" rpy="0 0 ${pi}"/>
+      <axis xyz="0 0 1"/>
+      <limit effort="64" lower="-2.9671" upper="2.9671" velocity="2.4435"/>
+    </joint>
+
+    <joint name="${prefix}joint4" type="revolute">
+      <parent link="${prefix}link3"/>
+      <child link="${prefix}link4"/>
+      <origin xyz="-0.02 -0.03 -0.19" rpy="0 0 0"/>
+      <axis xyz="0 1 0"/>
+    <limit effort="64" lower="-1.8675" upper="2.6878" velocity="2.4435" />
+    </joint>
+
+    <joint name="${prefix}joint5" type="revolute">
+      <parent link="${prefix}link4"/>
+      <child link="${prefix}link5"/>
+      <origin xyz="0.02 -0.025 -0.195" rpy="0 0 0"/>
+      <axis xyz="0 0 1"/>
+      <limit effort="39" lower="-2.9671" upper="2.9671" velocity="4.8869"/>
+    </joint>
+
+    <joint name="${prefix}joint6" type="revolute">
+      <parent link="${prefix}link5"/>
+      <child link="${prefix}link6"/>
+      <origin xyz="0.0 0.03 -0.19" rpy="0 0 ${pi}"/>
+      <axis xyz="0 1 0"/>
+      <limit effort="39" lower="-1.3963" upper="4.5379" velocity="4.8869" />
+    </joint>
+
+    <joint name="${prefix}joint7" type="revolute">
+      <parent link="${prefix}link6"/>
+      <child link="${prefix}link7"/>
+      <origin xyz="0.055 -0.070 -0.11" rpy="0 ${-pi/2} 0"/>
+      <axis xyz="0 0 1"/>
+      <limit effort="39" lower="-2.9671" upper="2.9671" velocity="4.8869"/>
+    </joint>
+
+    <joint name="${prefix}link7_to_flange" type="fixed">
+      <parent link="${prefix}link7"/>
+      <child link="${prefix}flange"/>
+      <xacro:if value="${rizon_type=='rizon4'}">
+        <origin xyz="0.0 0.0 0.081" rpy="0 0 ${-pi}"/>
+      </xacro:if>
+      <xacro:if value="${rizon_type=='rizon4s'}">
+        <origin xyz="0.0 0.0 0.124" rpy="0 0 ${-pi}"/>
+      </xacro:if>
+      <xacro:if value="${rizon_type=='rizon4mr'}">
+        <origin xyz="0.0 0.0 -0.081" rpy="${pi} 0 0"/>
+      </xacro:if>
+    </joint>
+
+    <link name="${prefix}base_link">
+      <inertial>
+        <mass value="3.653" />
+        <origin xyz="0.0002 0.0006 0.0874" rpy="0 0 0"/>
+        <inertia ixx="0.0194" iyy="0.0196" izz="0.0088" ixy="0.0000" ixz="0.0000" iyz="-0.0001"/>
+      </inertial>
+      <visual>
+        <origin xyz="0 0 0" rpy="0 0 ${pi}"/>
+        <geometry>
+          <mesh filename="${mesh_prefix_path}meshes/${rizon_type}/visual/link0.obj" />
+        </geometry>
+        <material name="rizon_light_grey" />
+      </visual>
+      <collision>
+        <origin xyz="0 0 0" rpy="0 0 ${pi}"/>
+        <geometry>
+          <mesh filename="${mesh_prefix_path}meshes/${rizon_type}/collision/link0.stl"/>
+        </geometry>
+      </collision>
+    </link>
+
+    <link name="${prefix}link1">
+      <inertial>
+        <mass value="3.673" />
+        <origin xyz="0.0000 0.0060 -0.1489" rpy="0 0 0"/>
+        <inertia ixx="0.0276" iyy="0.0272" izz="0.0077" ixy="0.0000" ixz="0.0000" iyz="-0.0017"/>
+      </inertial>
+      <visual name="shell">
+        <origin xyz="0 0 0" rpy="0 ${pi} 0" />
+        <geometry>
+          <mesh filename="${mesh_prefix_path}meshes/${rizon_type}/visual/link1.obj" />
+        </geometry>
+        <material name="rizon_light_grey" />
+      </visual>
+      <collision name="hull">
+        <origin xyz="0 0 0" rpy="0 ${pi} 0" />
+        <geometry>
+          <mesh filename="${mesh_prefix_path}meshes/${rizon_type}/collision/link1.stl" />
+        </geometry>
+      </collision>
+    </link>
+
+    <link name="${prefix}link2">
+      <inertial>
+        <mass value="2.734" />
+        <origin xyz="0.0000 -0.0362 -0.0979" rpy="0 0 0"/>
+        <inertia ixx="0.0234" iyy="0.0243" izz="0.0036" ixy="0.0000" ixz="0.0000" iyz="-0.0003"/>
+      </inertial>
+      <visual name="shell">
+        <origin xyz="0 0 0" rpy="${pi} 0 0"/>
+        <geometry>
+          <mesh filename="${mesh_prefix_path}meshes/${rizon_type}/visual/link2.obj" />
+        </geometry>
+        <material name="rizon_light_grey" />
+      </visual>
+      <collision name="hull">
+        <origin xyz="0 0 0" rpy="${pi} 0 0"/>
+        <geometry>
+          <mesh filename="${mesh_prefix_path}meshes/${rizon_type}/collision/link2.stl" />
+        </geometry>
+      </collision>
+    </link>
+
+    <link name="${prefix}link3">
+      <inertial>
+        <mass value="2.397" />
+        <origin xyz="-0.0117 -0.0028 -0.1334" rpy="0 0 0"/>
+        <inertia ixx="0.0141" iyy="0.0137" izz="0.0038" ixy="0.0001" ixz="0.0014" iyz="0.0007"/>
+      </inertial>
+      <visual name="shell">
+        <origin xyz="0 0 0" rpy="0 ${pi} 0" />
+        <geometry>
+          <mesh filename="${mesh_prefix_path}meshes/${rizon_type}/visual/link3r.obj" />
+        </geometry>
+        <material name="rizon_light_grey" />
+      </visual>
+      <collision  name="hull">
+        <origin xyz="0 0 0" rpy="0 ${pi} 0" />
+        <geometry>
+          <mesh filename="${mesh_prefix_path}meshes/${rizon_type}/collision/link3r.obj" />
+        </geometry>
+      </collision>
+    </link>
+
+    <link name="${prefix}link4">
+      <inertial>
+        <mass value="2.397" />
+        <origin xyz="0.0126 -0.0312 -0.1013" rpy="0 0 0"/>
+        <inertia ixx="0.0184" iyy="0.0188" izz="0.0030" ixy="0.0001" ixz="-0.0016" iyz="-0.0012"/>
+      </inertial>
+      <visual name="shell">
+        <origin xyz="0 0 0" rpy="${pi} 0 0"/>
+        <geometry>
+          <mesh filename="${mesh_prefix_path}meshes/${rizon_type}/visual/link4r.obj" />
+        </geometry>
+        <material name="rizon_light_grey" />
+      </visual>
+      <collision name="hull">
+        <origin xyz="0 0 0" rpy="${pi} 0 0"/>
+        <geometry>
+          <mesh filename="${mesh_prefix_path}meshes/${rizon_type}/collision/link4r.obj" />
+        </geometry>
+      </collision>
+    </link>
+
+    <link name="${prefix}link5">
+      <inertial>
+        <mass value="2.363" />
+        <origin xyz="0.0000 0.0032 -0.1328" rpy="0 0 0"/>
+        <inertia ixx="0.0140" iyy="0.0134" izz="0.0036" ixy="0.0000" ixz="0.0000" iyz="-0.0007"/>
+      </inertial>
+      <visual name="shell">
+        <origin xyz="0 0 0" rpy="0 ${pi} 0"/>
+        <geometry>
+          <mesh filename="${mesh_prefix_path}meshes/${rizon_type}/visual/link5.obj" />
+        </geometry>
+        <material name="rizon_light_grey" />
+      </visual>
+      <collision name="hull">
+        <origin xyz="0 0 0" rpy="0 ${pi} 0"/>
+        <geometry>
+          <mesh filename="${mesh_prefix_path}meshes/${rizon_type}/collision/link5.stl"/>
+        </geometry>
+      </collision>
+    </link>
+
+    <link name="${prefix}link6">
+      <inertial>
+        <mass value="2.135" />
+        <origin xyz="0.0093 -0.0567 -0.0694" rpy="0 0 0"/>
+        <inertia ixx="0.0083" iyy="0.0086" izz="0.0036" ixy="-0.0003" ixz="-0.0008" iyz="0.0018"/>
+      </inertial>
+      <visual name="shell">
+        <origin xyz="0 0 0" rpy="0 ${pi} 0"/>
+        <geometry>
+          <mesh filename="${mesh_prefix_path}meshes/${rizon_type}/visual/link6r.obj" />
+        </geometry>
+        <material name="rizon_light_grey" />
+      </visual>
+      <collision name="hull">
+        <origin xyz="0 0 0" rpy="0 ${pi} 0"/>
+        <geometry>
+          <mesh filename="${mesh_prefix_path}meshes/${rizon_type}/collision/link6r.obj" />
+        </geometry>
+      </collision>
+    </link>
+
+    <link name="${prefix}link7">
+      <xacro:if value="${rizon_type=='rizon4'}">
+        <inertial>
+          <mass value="0.8" />
+          <origin rpy="0 0 0" xyz="0.0 0.0 0.03" />
+          <inertia ixx="0.0" ixy="0.0" ixz="0.0" iyy="0.0" iyz="0.0" izz="0.0" />
+        </inertial>
+        <visual name="shell">
+          <origin xyz="0 0 0" rpy="0 0 0"/>
+          <geometry>
+            <mesh filename="${mesh_prefix_path}meshes/${rizon_type}/visual/link7.obj" />
+          </geometry>
+          <material name="rizon_light_grey" />
+        </visual>
+        <collision>
+          <origin xyz="0 0 0" rpy="0 0 0"/>
+          <geometry>
+            <mesh filename="${mesh_prefix_path}meshes/${rizon_type}/collision/link7.stl" />
+          </geometry>
+        </collision>
+      </xacro:if>
+      <xacro:if value="${rizon_type=='rizon4s'}">
+        <inertial>
+          <mass value="1.4" />
+          <origin xyz="0.0 0.0 0.05" rpy="0 0 0"/>
+          <inertia ixx="0.0" iyy="0.0" izz="0.0" ixy="0.0" ixz="0.0" iyz="0.0"/>
+        </inertial>
+        <visual name="shell">
+          <origin xyz="0 0 0" rpy="0 0 0"/>
+          <geometry>
+            <mesh filename="${mesh_prefix_path}meshes/${rizon_type}/visual/link7.obj" />
+          </geometry>
+          <material name="rizon_light_grey" />
+        </visual>
+        <collision>
+          <origin xyz="0 0 0" rpy="0 0 0"/>
+          <geometry>
+            <mesh filename="${mesh_prefix_path}meshes/${rizon_type}/collision/link7.stl" />
+          </geometry>
+        </collision>
+      </xacro:if>
+      <xacro:if value="${rizon_type=='rizon4mr'}">
+        <inertial>
+          <mass value="0.793" />
+          <origin xyz="0.0000 0.0003 -0.0250" rpy="0 0 0"/>
+          <inertia ixx="0.0009" iyy="0.0010" izz="0.0009" ixy="0.0000" ixz="0.0000" iyz="0.0000"/>
+        </inertial>
+        <visual name="shell">
+          <origin xyz="0 0 0" rpy="${pi} 0 0"/>
+          <geometry>
+            <mesh filename="${mesh_prefix_path}meshes/${rizon_type}/visual/link7.obj" />
+          </geometry>
+          <material name="rizon_light_grey" />
+        </visual>
+        <collision name="hull">
+          <origin xyz="0 0 0" rpy="${pi} 0 0"/>
+          <geometry>
+              <mesh filename="${mesh_prefix_path}meshes/${rizon_type}/collision/link7.stl" />
+          </geometry>
+        </collision>
+      </xacro:if>
+    </link>
+
+    <link name="${prefix}flange"/>
+      
+  </xacro:macro>
+
+</robot>
