@@ -91,7 +91,6 @@ class PushTEnv():
             ),
             show_viewer=show_interact_viewer,
         )
-        # self.plane = self.scene.add_entity(gs.morphs.URDF(file="urdf/plane/plane.urdf", fixed=True)) # add a plane(with special markers)
 
         self.plane : gs.engine.entities.RigidEntity = self.scene.add_entity(gs.morphs.URDF(file=self.path['plane'], fixed=True))
 
@@ -108,15 +107,22 @@ class PushTEnv():
             )
         )
 
-        self.cube : gs.engine.entities.RigidEntity = self.scene.add_entity(gs.morphs.URDF(file=self.path['cube'],
-                                                                                          fixed=True))
-        # USE Box
+        self.cube : gs.engine.entities.RigidEntity = self.scene.add_entity(
+            gs.morphs.URDF(
+                pos = (1, 1, 0.1),
+                file=self.path['cube'],
+                collision=True,
+                fixed=True,
+                )
+        )
+
         # self.cube : gs.engine.RigidEntity = self.scene.add_entity(
         #     gs.morphs.Box(
-        #         pos=(1, 1, self.cube_w),
-        #         size = (self.cube_w, self.cube_w, self.cube_w)
+        #         pos=(0.5, 0.5, 0.1),
+        #         size = (0.1, 0.1, 0.1)
         #     )
         # )
+        # box_baselink_joint, box_baselink
 
         self.cam = self.scene.add_camera(
             res=(120, 120),
@@ -126,23 +132,23 @@ class PushTEnv():
             GUI=show_camera
         )
         self.scene.build(n_envs=n_envs)
-        print(self.cube.get_joint('cube_plane_joint').dof_idx_local)
+        # print(self.cube.get_joint('cube_plane_joint').dof_idx_local)
 
+        print(self.cube)
         jnt_names = [ 'joint1', 'joint2', 'joint3', 'joint4', 'joint5', 
                       'joint6', 'joint7', 'finger_width_joint'] 
-        
-        # cube_joint = 'cube_plane_joint'
 
-        self.dofs_idx = [self.robot.get_joint(name).dof_idx_local for name in jnt_names]
+        self.robot_dofs_idx = [self.robot.get_joint(name).dof_idx_local for name in jnt_names]
+        self.cube_dofs_idx  = self.cube.get_joint('cube_plane_joint').dof_idx_local
         self.eef: gs.engine.entities.rigid_entity.RigidLink = self.robot.get_link('tcp')
         self.eef_idx = self.eef.idx_local
         self.robot.set_dofs_kp(
             kp             = np.array([4500, 4500, 3500, 3500, 2000, 2000, 2000, 100]),
-            dofs_idx_local = self.dofs_idx,
+            dofs_idx_local = self.robot_dofs_idx,
         )
         self.robot.set_dofs_kv(
             kv             = np.array([450, 450, 350, 350, 200, 200, 200, 10]),
-            dofs_idx_local = self.dofs_idx,
+            dofs_idx_local = self.robot_dofs_idx,
         )
         self.render_cache = None
         self.reset()
@@ -179,18 +185,20 @@ class PushTEnv():
                      ), axis=1))
         target_angle = self.np_random.random(size=(num_reset, )) * np.pi / 2 
 
-        home_pos = torch.zeros(size=(num_reset, len(self.dofs_idx)))
+        home_pos = torch.zeros(size=(num_reset, len(self.robot_dofs_idx)))
 
         self.robot.control_dofs_position(position=home_pos, 
-                                        dofs_idx_local=self.dofs_idx, 
+                                        dofs_idx_local=self.robot_dofs_idx, 
                                         envs_idx=envs_idx
                                      )
         
-        # dofs_idx_local for cube: default 0 [only 1 joint]
-        self.cube.set_dofs_position(block_state, 
-                                    dofs_idx_local=np.arange(6), 
+        # # dofs_idx_local for cube: default 0 [only 1 joint]
+        
+        self.plane.set_dofs_position(block_state, 
+                                    dofs_idx_local=self.cube_dofs_idx, 
                                     envs_idx=envs_idx) 
-
+        
+        # print(self.cube.get_link('cube').get_pos())
 
     def step(self, action=None):
         # action: agent_pos(eef_pos)
@@ -203,8 +211,14 @@ class PushTEnv():
     def reset(self,):
         self.reset_idx(envs_idx=[i for i in range(self.n_envs)])
 
-    def _get_obs(self, depth=False, segmentation=False, normal=False):
-        img = self.cam.render(depth=depth, segmentation=segmentation, normal=normal) # img <tuple> (res[0], res[1], 3)
+    def _get_obs(self, rgb=True, depth=False, segmentation=False, normal=False):
+        # ind = []
+        # if rgb: ind.append(0) # default rgb_array
+        # if depth: ind.append(1)
+        # if segmentation: ind.append(2)
+        # if normal: ind.append(3)
+
+        img = self.cam.render(rgb=rgb, depth=depth, segmentation=segmentation, normal=normal) # img <tuple> (res[0], res[1], 3)
         self.render_cache = img
 
         # jnt_pos = [self.robot.get_dofs_position(idx, envs_idx=np.arange(self.n_envs)) for idx in self.dofs_idx]
@@ -231,6 +245,8 @@ class PushTEnv():
         # target_folder = "./ILDP/genesis_ILDP/test/"  
         os.makedirs(target_folder, exist_ok=True)
         old_dir = os.getcwd()
+
+        print(old_dir)
         os.chdir(target_folder)
 
         if filename is None:
@@ -243,11 +259,12 @@ class PushTEnv():
 # test: script python -m genesis-ILDP.env.pushT_env
 if __name__ == '__main__':
     env = PushTEnv()
-    env.start(show_camera=True)
-    env.start_recording()
+    env.start(show_camera=False, show_interact_viewer=True)
+    # env.start_recording()
     
     for i in range(1000):
         env.step()
-        if i % 10 == 0: # render per 10 frames
-            env.render('rgb_array')
-    env.stop_recording()
+        if i % 100 == 0: # render per 10 frames
+            # print(env.render('rgb_array'))
+            env.reset()
+    # env.stop_recording()
