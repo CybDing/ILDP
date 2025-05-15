@@ -23,11 +23,13 @@ Structure ( Expected:( )
 - datasets
   - pushTDataset (To be updated soon!)
   - ...
-- 
 - utils
   - ...
-- dataCollection
-  - An interactive interface using Pygame communicating with genesis for user-friendly robot control(To be planned and executed soon!)   
+- script
+  - gen_image
+    - for segmentation test(training)
+  - collecting_data
+    - An interactive interface using Pygame communicating with genesis for user-friendly robot control(To be planned and executed soon!)   
 - Workspace
   - train
   - eval
