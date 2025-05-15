@@ -4,10 +4,10 @@ import os
 import numpy as np
 
 file_path = os.path.dirname(os.path.abspath(__file__)) # Return the directory path for current file
-urdf_path = os.path.join(file_path, 'genesis_ILDP/assets/roboticArms/urdf/rizon44/flexiv_rizon4_kinematics.urdf')
+urdf_path = os.path.join(file_path, '../assets/roboticArms/urdf/rizon44/flexiv_rizon4_kinematics.urdf')
 # urdf_path = os.path.join(file_path, 'roboticArms/urdf/rizon/dual_rizon_edited.urdf')
 
-device = gs.gpu
+device = gs.cuda
 # dtype = gs.tc_float # 32 precision
 seed = None
 gs.init(backend=device, seed=seed)
@@ -23,7 +23,7 @@ scene = gs.Scene(
     sim_options = gs.options.SimOptions(
         dt = 0.01
     ),
-    show_viewer = True
+    show_viewer = False
 )
 plane = scene.add_entity(
     gs.morphs.Plane(

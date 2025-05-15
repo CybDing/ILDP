@@ -31,8 +31,8 @@ class PushTEnv():
                  ):
         # super().__init__()
 
-        self.sim_hz = 100
-        self.control_hz = 50
+        self.sim_hz = 100.0
+        self.control_hz = 50.0
         self.is_init = False
         self._seed = seed
         self.scene = None
@@ -74,7 +74,7 @@ class PushTEnv():
             backend = gs.gpu
         )
         self.scene = gs.Scene(
-            sim_options=gs.options.SimOptions(dt=1/self.sim_hz, substeps=2),
+            sim_options=gs.options.SimOptions(dt=1/self.sim_hz, substeps=1),
             viewer_options=gs.options.ViewerOptions(
                 max_FPS=int(0.5 * self.sim_hz),
                 camera_pos=(2.0, 0.0, 2.5),
@@ -84,9 +84,10 @@ class PushTEnv():
             vis_options=gs.options.VisOptions(rendered_envs_idx=list(range(1))),
 
             rigid_options=gs.options.RigidOptions(
-                constraint_solver=gs.constraint_solver.Newton,
+                constraint_solver=gs.constraint_solver.CG,
                 enable_collision=True,
                 enable_joint_limit=True,
+                dt=0.01
             ),
             show_viewer=show_interact_viewer,
         )
@@ -113,7 +114,7 @@ class PushTEnv():
         )
         self.cam = self.scene.add_camera(
             res=(120, 120),
-            pos=(0,0,2),
+            pos=(0,0,3),
             lookat=(0,0,0),
             fov=40,
             GUI=show_camera
@@ -125,7 +126,6 @@ class PushTEnv():
         self.dofs_idx = [self.robot.get_joint(name).dof_idx_local for name in jnt_names]
         self.eef: gs.engine.entities.rigid_entity.RigidLink = self.robot.get_link('tcp')
         self.eef_idx = self.eef.idx_local
-
         self.robot.set_dofs_kp(
             kp             = np.array([4500, 4500, 3500, 3500, 2000, 2000, 2000, 100]),
             dofs_idx_local = self.dofs_idx,
@@ -165,14 +165,14 @@ class PushTEnv():
 
         home_pos = torch.zeros(size=(num_reset, len(self.dofs_idx)))
 
-        self.robot.set_dofs_position(home_pos, 
-                                     dofs_idx_local= self.dofs_idx, 
-                                     envs_idx=envs_idx,
-                                     zero_velocity=True)
+        self.robot.control_dofs_position(position=home_pos, 
+                                        dofs_idx_local=self.dofs_idx, 
+                                        envs_idx=envs_idx
+                                     )
         self.cube.set_pos(block_pos, envs_idx)
 
 
-    def step(self, action):
+    def step(self, action=None):
         # action: agent_pos(eef_pos)
         self.scene.step()
     
@@ -203,14 +203,25 @@ class PushTEnv():
         #     self._get_obs()
         return self.render_cache
     
+    def start_recording(self, ):
+        assert self.cam is not None
+        self.cam.start_recording()
+    
+    def stop_recording(self, filename=None):
+
+        if filename is None:
+            filename = time.strftime("%Y-%m%d-%H-%M")+'pushT-env.mp4'
+        self.cam.stop_recording(save_to_filename=filename)
+    
 
 # test: script python -m genesis-ILDP.env.pushT_env
 if __name__ == '__main__':
     env = PushTEnv()
     env.start(show_camera=False)
-
+    env.start_recording()
+    
     for i in range(1000):
         env.step()
         if i % 10 == 0: # render per 10 frames
             env.render('rgb_array')
-    
+    env.stop_recording()
