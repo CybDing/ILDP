@@ -109,7 +109,7 @@ class PushTEnv():
 
         self.cube : gs.engine.entities.RigidEntity = self.scene.add_entity(
             gs.morphs.URDF(
-                pos = (1, 1, 0.1),
+                pos = (1, 1, 0.2),
                 file=self.path['cube'],
                 collision=True,
                 fixed=True,
@@ -125,7 +125,7 @@ class PushTEnv():
         # box_baselink_joint, box_baselink
 
         self.cam = self.scene.add_camera(
-            res=(120, 120),
+            res=(256, 256),
             pos=(0,0,3),
             lookat=(0,0,0),
             fov=40,
@@ -134,7 +134,6 @@ class PushTEnv():
         self.scene.build(n_envs=n_envs)
         # print(self.cube.get_joint('cube_plane_joint').dof_idx_local)
 
-        print(self.cube)
         jnt_names = [ 'joint1', 'joint2', 'joint3', 'joint4', 'joint5', 
                       'joint6', 'joint7', 'finger_width_joint'] 
 
@@ -192,13 +191,11 @@ class PushTEnv():
                                         envs_idx=envs_idx
                                      )
         
-        # # dofs_idx_local for cube: default 0 [only 1 joint]
-        
-        self.plane.set_dofs_position(block_state, 
+        self.cube.set_dofs_position(block_state, 
                                     dofs_idx_local=self.cube_dofs_idx, 
                                     envs_idx=envs_idx) 
         
-        # print(self.cube.get_link('cube').get_pos())
+        print(self.cube.get_link('cubee').get_pos())
 
     def step(self, action=None):
         # action: agent_pos(eef_pos)
@@ -259,7 +256,7 @@ class PushTEnv():
 # test: script python -m genesis-ILDP.env.pushT_env
 if __name__ == '__main__':
     env = PushTEnv()
-    env.start(show_camera=False, show_interact_viewer=True)
+    env.start(show_camera=False, show_interact_viewer=False)
     # env.start_recording()
     
     for i in range(1000):
