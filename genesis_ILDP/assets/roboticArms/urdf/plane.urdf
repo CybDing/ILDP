@@ -1,10 +1,11 @@
 <?xml version="1.0"?>
 <robot name="plane_with_cube_marker">
 
+<link name="world"/>
 <link name="plane">
     <visual>
         <geometry>
-            <box size="200 200 0.02"/>
+            <box size="200 200 10"/>
         </geometry>
         <material name="gray">
             <color rgba="0.9 0.9 0.9 1"/>
@@ -12,11 +13,11 @@
     </visual>
     <collision>
         <geometry>
-            <box size="200 200 0.02"/>
+            <box size="200 200 10"/>
         </geometry>
     </collision>
     <inertial>
-        <mass value="1"/>
+        <mass value="10000"/>
         <inertia ixx="1" ixy="0" ixz="0" iyy="1" iyz="0" izz="1"/>
     </inertial>
 </link>
@@ -27,40 +28,54 @@
             <box size="0.11 0.11 0.001"/>
         </geometry>
         <material name="red">
-            <color rgba="1 0 0 0.8"/>
+            <color rgba="1 0 0 1"/>
         </material>
     </visual>
+    <inertial>
+        <mass value="100"/>
+        <inertia ixx="0.00035" ixy="0" ixz="0" iyy="0.00035" iyz="0" izz="0.00035"/>
+    </inertial>
 </link>
 
-<joint name="marker_joint" type="fixed">
-    <parent link="plane"/>
-    <child link="marker"/>
-    <origin xyz="0.5 0.5 0.03" rpy="0 0 0"/>
+<joint name="plane_joint" type="fixed">
+    <parent link="world"/>
+    <child link="plane"/>
+    <origin xyz="0 0.0 -5.0" rpy="0 0 0"/>
 </joint>
 
-<!-- <link name="x_link"/>
+<joint name="marker_joint" type="floating">
+    <parent link="world"/>
+    <child link="marker"/>
+    <origin xyz="0.5 0.0 0.04" rpy="0 0 0"/>
+    <!-- <limit lower="-3.1415926" upper="3.1415926"/>  -->
+</joint>
+
+<!-- 
+<link name="x_link"/>
 <link name="y_link"/>
 
 <joint name="x_translation" type="prismatic">
   <parent link="plane"/>
   <child link="x_link"/>
   <axis xyz="1 0 0"/>
-  <limit lower="-10" upper="10"/>
-  <origin xyz="0.5 0.5 0.03" rpy="0 0 0"/>
-</joint>
+  <limit effort="100" velocity="100" lower="-10" upper="10"/>
+  <origin xyz="0.5 0.0 0.03" rpy="0 0 0"/>
+</joint> 
 
 <joint name="y_translation" type="prismatic">
   <parent link="x_link"/>
   <child link="y_link"/>
   <axis xyz="0 1 0"/>
-  <limit lower="-10" upper="10"/>
+  <limit effort="100" velocity="100" lower="-10" upper="10"/>
+  <origin xyz="0.0 0.0 0.0" rpy="0 0 0"/>
 </joint>
 
 <joint name="z_rotation" type="revolute">
   <parent link="y_link"/>
   <child link="marker"/>
   <axis xyz="0 0 1"/>
+  <origin xyz="0.0 0.0 0.0" rpy="0 0 0"/>
   <limit lower="-3.1415926" upper="3.1415926"/>
-</joint> -->
+</joint>  -->
 
 </robot>

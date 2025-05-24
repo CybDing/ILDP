@@ -46,4 +46,7 @@ venv.bak/
 .idea/
 
 TODO.md
+
 test/
+video/
+model/

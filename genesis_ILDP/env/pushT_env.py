@@ -16,14 +16,14 @@ from genesis_ILDP.utils.cuda import *
 from genesis_ILDP.config.env_config import *
 
 class PushTEnv():
-    # TODO reset(), step(), render(), close(), seed(), run(), cal_planner()
-    # TODO _get_obs(), get_info()
+    # TODO reset(), step(), render(), close(), seed()
+    # TODO get_info()
     metadata = {"render.mode": ["rgb_array"], "video.frames_per_second": 10}
 
     def __init__(self,
-                 render_size=96,
-                 xlim=2.,
-                 ylim=2.,
+                 render_size=128,
+                 xlim=.5,
+                 ylim=.5,
                  seed=None, # seed 
                  path=env_path,
                 #  cube_w = 0.1
@@ -31,14 +31,14 @@ class PushTEnv():
         # super().__init__()
 
         self.render_size = render_size
-        self.sim_hz = 100.0
-        self.control_hz = 50.0
+        self.sim_hz = 200.0
+        self.control_hz = 50.0 # how long waiting for robotic arms to finsih exectuing an action
         self.is_init = False
         self._seed = seed
         self.scene = None
         self.n_envs = None
         self.np_random = None
-        self.block_lim = {'xlim': xlim/2, 'ylim': ylim/2}
+        self.block_lim = {'xlim': xlim, 'ylim': ylim}
         # self.cube_w = cube_w
         self.path = path
 
@@ -78,8 +78,8 @@ class PushTEnv():
             sim_options=gs.options.SimOptions(dt=1/self.sim_hz, substeps=1),
             viewer_options=gs.options.ViewerOptions(
                 max_FPS=int(0.5 * self.sim_hz),
-                camera_pos=(2.0, 0.0, 2.5),
-                camera_lookat=(0.0, 0.0, 0.5),
+                camera_pos=(2.5, 0.0, 4),
+                camera_lookat=(-0.12, -0.12, 0.6),
                 camera_fov=40 # angle look at
             ),
 
@@ -107,7 +107,8 @@ class PushTEnv():
                 links_to_keep=[
                     'marker',
                 ]
-            )
+            ),
+            material=gs.materials.Rigid(gravity_compensation=1.0)
         )
 
         self.robot : gs.engine.entities.RigidEntity = self.scene.add_entity(
@@ -146,8 +147,8 @@ class PushTEnv():
 
         self.cam = self.scene.add_camera(
             res=(self.render_size, self.render_size),
-            pos=(0,0,3),
-            lookat=(0,0,0),
+            pos=(0.25, 1, 2),
+            lookat=(0.25, 0, 0.0),
             fov=40,
             GUI=show_camera,
         )
@@ -162,6 +163,8 @@ class PushTEnv():
         self.cube_dofs_idx  = self.cube.get_joint('cube_plane_joint').dof_idx_local
         self.eef: gs.engine.entities.rigid_entity.RigidLink = self.robot.get_link('tcp')
         self.eef_idx = self.eef.idx_local
+        self.marker_idx = self.plane.get_link('marker').idx_local
+        self.marker_dofs_idx = self.plane.get_joint('marker_joint').dof_idx_local
         self.robot.set_dofs_kp(
             kp             = np.array([4500, 4500, 3500, 3500, 2000, 2000, 2000, 100]),
             dofs_idx_local = self.robot_dofs_idx,
@@ -186,9 +189,9 @@ class PushTEnv():
         if num_reset == 0: return
 
         block_pos = np.concatenate(
-                    (self.np_random.random(size=(num_reset, 1)) * self.block_lim['xlim'] * 2 - self.block_lim['xlim'],
+                    (self.np_random.random(size=(num_reset, 1)) * self.block_lim['xlim'],
                      self.np_random.random(size=(num_reset, 1)) * self.block_lim['ylim'] * 2 - self.block_lim['ylim'],
-                     np.ones(shape=(num_reset,1)) * 0.1 # CHECK cube.urdf (default)
+                     np.ones(shape=(num_reset,1)) * 0.05 # CHECK cube.urdf (default)
                      ), axis=1)
         block_angle = self.np_random.random(size=(num_reset, 1)) * np.pi / 2 # 0 - pi/2 
         block_state = to_torch(np.concatenate(
@@ -197,17 +200,19 @@ class PushTEnv():
                     block_angle), 
                     axis=-1))
 
-        # target_pos = to_torch(np.concatenate(
-        #             (self.np_random.random(size=(num_reset, 1)) * self.block_lim['xlim'] * 2 - self.block_lim['xlim'],
-        #              self.np_random.random(size=(num_reset, 1)) * self.block_lim['ylim'] * 2 - self.block_lim['ylim'],
-        #              np.zeros(shape=(num_reset,1))
-        #              ), axis=1))
+        target_pos = to_torch(np.concatenate(
+                    (self.np_random.random(size=(num_reset, 1)) * self.block_lim['xlim'],
+                     self.np_random.random(size=(num_reset, 1)) * self.block_lim['ylim'] * 2 - self.block_lim['ylim'],
+                     np.zeros(shape=(num_reset,1))
+                     ), axis=1))
         
-        # target_angle = to_torch(np.concatenate((
-        #             np.cos(self.np_random.random(size=(num_reset, 1)) * np.pi / 4),
-        #             np.zeros(shape=(num_reset, 2)),
-        #             np.sin(self.np_random.random(size=(num_reset, 1)) * np.pi / 4),
-        #             ), axis=1))
+        target_angle = self.np_random.random(size=(num_reset, 1)) * np.pi - np.pi / 2 # -pi/2 to pi/2 
+        
+        target_state = to_torch(np.concatenate(
+                    (target_pos,
+                    np.zeros(shape=(num_reset, 2)), 
+                    target_angle), 
+                    axis=-1))
 
         home_pos = torch.zeros(size=(num_reset, len(self.robot_dofs_idx)))
 
@@ -215,37 +220,29 @@ class PushTEnv():
                                         dofs_idx_local=self.robot_dofs_idx, 
                                         envs_idx=envs_idx
                                      )
-        
-        # # dofs_idx_local for cube: default 0 [only 1 joint]
-        
+                
         self.cube.set_dofs_position(block_state, 
                                     dofs_idx_local=self.cube_dofs_idx, 
                                     envs_idx=envs_idx) 
-        # self.plane.set_pos(target_pos, envs_idx=envs_idx)
-        # self.plane.set_quat(target_angle)
-
-        # print(self.cube.get_link('cubee').get_pos())
+        self.plane.set_dofs_position(target_state,
+                                     dofs_idx_local=self.marker_dofs_idx,
+                                     envs_idx=envs_idx)
 
     def step(self, action=None):
         # action: agent_pos(eef_pos)
         self.scene.step()
     
 
-    def ikine(self, ): # 简单测试是否需要重写
+    def ikine(self, ): 
         pass
 
     def reset(self,):
         self.reset_idx(envs_idx=[i for i in range(self.n_envs)])
 
     def _get_obs(self, rgb=True, depth=False, segmentation=False, normal=False):
-        # ind = []
-        # if rgb: ind.append(0) # default rgb_array
-        # if depth: ind.append(1)
-        # if segmentation: ind.append(2)
-        # if normal: ind.append(3)
 
-        img = self.cam.render(rgb=rgb, depth=depth, segmentation=segmentation, normal=normal) # img <tuple> (res[0], res[1], 3)
-        print(img)
+        # img (list:[w, h, 3],NoneType,NoneType,NoneType)
+        img = self.cam.render(rgb=rgb, depth=depth, segmentation=segmentation, normal=normal) 
         self.render_cache = img
 
         # jnt_pos = [self.robot.get_dofs_position(idx, envs_idx=np.arange(self.n_envs)) for idx in self.dofs_idx]
@@ -254,13 +251,23 @@ class PushTEnv():
             'image': img,
             'agent_pos': agent_pos
         }
+        marker_pos = self.plane.get_links_pos(self.marker_idx, envs_idx=np.arange(self.n_envs))    
+        print(marker_pos)    
         return obs
     
-    def render(self, mode):
+    def _get_info(self,):
+
+        info = {
+            "agent_pos": self.eef.get_pos(),
+            "goal_pos": self.plane.get_links_pos(self.marker_idx)
+        }
+        return info
+    
+    def render(self, mode='rgb_array'):
         assert mode == 'rgb_array'
-        self._get_obs(segmentation=True)
-        # if self.render_cache is None:
-        #     self._get_obs()
+        self._get_obs(segmentation=False)
+        if self.render_cache is None:
+            self._get_obs()
         return self.render_cache
     
     def start_recording(self, ):
@@ -272,53 +279,23 @@ class PushTEnv():
         # target_folder = "./ILDP/genesis_ILDP/test/"  
         os.makedirs(target_folder, exist_ok=True)
         old_dir = os.getcwd()
-
-        print(old_dir)
         os.chdir(target_folder)
 
         if filename is None:
-            filename = os.path.join(target_folder, time.strftime("%Y%m%d-%H-%M") + "pushT-env.mp4")
+            filename = os.path.join(target_folder, time.strftime("%Y%m%d-%H-%M") + "-pushT-env.mp4")
         self.cam.stop_recording(save_to_filename=filename)
         
         os.chdir(old_dir)
     
-
-# test
 if __name__ == '__main__':
     env = PushTEnv()
-    env.start(show_camera=False, show_interact_viewer=True)
+    env.start(show_camera=False, show_interact_viewer=False)
     env.start_recording()
     
-    for i in range(1000):
+    for i in range(2000):
         env.step()
-        # if i % 100 == 0: # render per 10 frames
-        #     print(env.render('rgb_array'))
-            
+        env._get_obs()
+        if i % 1000 == 0: # render per 10 frames
+            env.reset()
+        #   print(env.render())
     env.stop_recording()
-
-    # size = 256
-    # path = os.path.join(os.path.dirname(os.path.abspath(__file__)), '../img')
-    # os.makedirs(path, exist_ok=True) 
-
-    # raw_path = os.path.join(path, 'raw')
-    # seg_path = os.path.join(path, 'seg')
-    # os.makedirs(raw_path, exist_ok=True)
-    # os.makedirs(seg_path, exist_ok=True)
-
-    # env = PushTEnv(render_size=size)
-    # env.start(show_camera=True)
-
-    # import PIL
-
-    # for i in range(10):
-
-    #     env.step()
-    #     img = env.render('rgb_array')
-    #     image_rgb = PIL.Image.fromarray(img[0].astype('uint8'), 'RGB')
-    #     image_L = PIL.Image.fromarray(img[2].astype('uint8'), 'L')
-
-    #     img_name = f'PushTEnv-{i}.jpg'  
-    #     image_rgb.save(os.path.join(raw_path, img_name))
-    #     image_L.save(os.path.join(seg_path, img_name))
-    #     env.reset()
-

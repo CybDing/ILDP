@@ -2,11 +2,12 @@ import genesis as gs
 import sys
 import os
 import numpy as np
+from genesis_ILDP.config.env_config import *
 
-file_path = os.path.dirname(os.path.abspath(__file__)) # Return the directory path for current file
-urdf_path = os.path.join(file_path, 'genesis_ILDP/assets/roboticArms/urdf/rizon44/flexiv_rizon4_kinematics.urdf')
+# file_path = os.path.dirname(os.path.abspath(__file__)) # Return the directory path for current file
+# urdf_path = os.path.join(file_path, 'genesis_ILDP/assets/roboticArms/urdf/rizon44/flexiv_rizon4_kinematics.urdf')
 # urdf_path = os.path.join(file_path, 'roboticArms/urdf/rizon/dual_rizon_edited.urdf')
-
+urdf_path = robot_path
 device = gs.gpu
 # dtype = gs.tc_float # 32 precision
 seed = None
@@ -110,7 +111,6 @@ qpos = flexiv.inverse_kinematics(
     pos  = np.array([0.65, 0.0, 0.22]),
     quat = np.array([0, 1, 0, 0]),
     dofs_idx_local=dofs_idx[0:7],
-    damping=2,
     max_solver_iters=100
 )
 
