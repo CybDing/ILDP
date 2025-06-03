@@ -1,4 +1,4 @@
-# ILDP 2025 project (test only, build with interest)
+# ILDP 2025 project
 Special thx to:
 Real Stanford: diffusion policy (# main reference for transition)
 the new genesis version for imitation learning using DP!
