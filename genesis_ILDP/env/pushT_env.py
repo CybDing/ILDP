@@ -15,7 +15,7 @@ import glfw
 from genesis_ILDP.utils.cuda import *
 from genesis_ILDP.config.env_config import *
 
-class PushTEnv():
+class PushTEnv(gym.Env):
     # TODO reset(), step(), render(), close(), seed()
     # TODO get_info()
     metadata = {"render.mode": ["rgb_array"], "video.frames_per_second": 10}
@@ -31,8 +31,8 @@ class PushTEnv():
         # super().__init__()
 
         self.render_size = render_size
-        self.sim_hz = 200.0
-        self.control_hz = 50.0 # how long waiting for robotic arms to finsih exectuing an action
+        self.sim_hz = 200
+        self.control_hz = 50 # how long waiting for robotic arms to finsih exectuing an action
         self.is_init = False
         self._seed = seed
         self.scene = None
@@ -41,6 +41,7 @@ class PushTEnv():
         self.block_lim = {'xlim': xlim, 'ylim': ylim}
         # self.cube_w = cube_w
         self.path = path
+        self.env_seed = None 
 
         self.observation_space = spaces.Dict({
             'images': spaces.Box(
@@ -51,14 +52,14 @@ class PushTEnv():
             ),
             'agent_pos': spaces.Box(
                 low=np.array([-xlim, -ylim], dtype=np.float32),
-                high=np.array([-xlim, -ylim], dtype=np.float32),
+                high=np.array([xlim, ylim], dtype=np.float32),
                 shape=(2, ),
                 dtype=np.float32
             )
         })
         self.action_space = spaces.Box(
             low=np.array([-xlim, -ylim], dtype=np.float32),
-            high=np.array([-xlim, -ylim], dtype=np.float32),
+            high=np.array([xlim, ylim], dtype=np.float32),
             shape=(2, ),
             dtype=np.float32
         )
@@ -66,26 +67,30 @@ class PushTEnv():
         self.seed()
 
 
-    def start(self, n_envs=1, show_interact_viewer=False, show_camera=False):
+    def start(self, n_envs=1, show_interact_viewer=False, show_camera=False, 
+              seed=None, env_separate=False):
         # init only once
         assert self.is_init == False 
         self.n_envs = n_envs
         gs.init(
-            seed = self._seed,
+            seed = 0,
+            #seed = self._seed
             backend = gs.gpu
         )
         self.scene = gs.Scene(
             sim_options=gs.options.SimOptions(dt=1/self.sim_hz, substeps=1),
             viewer_options=gs.options.ViewerOptions(
-                max_FPS=int(0.5 * self.sim_hz),
-                camera_pos=(2.5, 0.0, 4),
+                max_FPS=int(self.sim_hz),
+                camera_pos=(2.5, 0.0, 2.5),
                 camera_lookat=(-0.12, -0.12, 0.6),
                 camera_fov=40 # angle look at
             ),
 
             vis_options=gs.options.VisOptions(
-                rendered_envs_idx=list(range(1)),
-                segmentation_level = 'link',
+                # rendered_envs_idx=list(range(1)),
+                segmentation_level='link',
+                show_world_frame=False,
+                env_separate_rigid = env_separate,
             ),
 
             rigid_options=gs.options.RigidOptions(
@@ -152,7 +157,7 @@ class PushTEnv():
             fov=40,
             GUI=show_camera,
         )
-        self.scene.build(n_envs=n_envs)
+        self.scene.build(n_envs=n_envs, env_spacing=(1, 1))
         # print(self.cube.get_joint('cube_plane_joint').dof_idx_local)
 
         # print(self.cube)
@@ -161,8 +166,8 @@ class PushTEnv():
 
         self.robot_dofs_idx = [self.robot.get_joint(name).dof_idx_local for name in jnt_names]
         self.cube_dofs_idx  = self.cube.get_joint('cube_plane_joint').dof_idx_local
-        self.eef: gs.engine.entities.rigid_entity.RigidLink = self.robot.get_link('tcp')
-        self.eef_idx = self.eef.idx_local
+        self.tcp: gs.engine.entities.rigid_entity.RigidLink = self.robot.get_link('tcp')
+        self.tcp_idx = self.tcp.idx_local
         self.marker_idx = self.plane.get_link('marker').idx_local
         self.marker_dofs_idx = self.plane.get_joint('marker_joint').dof_idx_local
         self.robot.set_dofs_kp(
@@ -174,94 +179,129 @@ class PushTEnv():
             dofs_idx_local = self.robot_dofs_idx,
         )
         self.render_cache = None
-        self.reset()
+
+        # self.seed(seed=seed)
+        # self.reset()
+
 
     # setting seed for generator
     def seed(self, seed=None):
-        if seed is None:
-            seed = np.random.randint(0, 25536)
-        self._seed = seed
-        self.np_random = np.random.default_rng(seed)
+        if self._seed is None: # generate system level seed
+            self._seed = np.random.randint(0, 25536)
+        if seed is not None:
+            if self.n_envs is None: raise ValueError("Envs have not been initialized!")
+            if len(seed) != self.n_envs: raise ValueError("Given seed length is not" \
+            "compatible with n_envs!")
+            self.env_seed = seed
+            self.np_random_generators = [np.random.default_rng(s) for s in seed]
 
 
-    def reset_idx(self, envs_idx : list):
-        num_reset = len(envs_idx)
-        if num_reset == 0: return
+    def reset_idx(self, envs_idx: torch.Tensor):
+        num_reset = envs_idx.shape[0]
+        if num_reset == 0:
+            return
 
-        block_pos = np.concatenate(
-                    (self.np_random.random(size=(num_reset, 1)) * self.block_lim['xlim'],
-                     self.np_random.random(size=(num_reset, 1)) * self.block_lim['ylim'] * 2 - self.block_lim['ylim'],
-                     np.ones(shape=(num_reset,1)) * 0.05 # CHECK cube.urdf (default)
-                     ), axis=1)
-        block_angle = self.np_random.random(size=(num_reset, 1)) * np.pi / 2 # 0 - pi/2 
-        block_state = to_torch(np.concatenate(
-                    (block_pos,
-                    np.zeros(shape=(num_reset, 2)), # row & pitch remains zero
-                    block_angle), 
-                    axis=-1))
-
-        target_pos = to_torch(np.concatenate(
-                    (self.np_random.random(size=(num_reset, 1)) * self.block_lim['xlim'],
-                     self.np_random.random(size=(num_reset, 1)) * self.block_lim['ylim'] * 2 - self.block_lim['ylim'],
-                     np.zeros(shape=(num_reset,1))
-                     ), axis=1))
+        block_positions = []
+        target_positions = []
+        block_angles = []
+        target_angles = []
         
-        target_angle = self.np_random.random(size=(num_reset, 1)) * np.pi - np.pi / 2 # -pi/2 to pi/2 
+        for i, env_idx in enumerate(envs_idx):
+            env_idx = int(env_idx)
+            
+            if hasattr(self, 'np_random_generators') and env_idx < len(self.np_random_generators):
+                rng = self.np_random_generators[env_idx]
+            else:
+                raise ValueError("ENV-LEVEL seeds have not been defined!")
+            
+            block_x = rng.random() * self.block_lim['xlim']
+            block_y = rng.random() * self.block_lim['ylim'] * 2 - self.block_lim['ylim']
+            block_z = 0.05  # 固定高度
+            
+            block_angle = rng.random() * np.pi / 2
+            
+            target_x = rng.random() * self.block_lim['xlim']
+            target_y = rng.random() * self.block_lim['ylim'] * 2 - self.block_lim['ylim']
+            target_z = 0.0  # 目标在地面
+            
+            target_angle = rng.random() * np.pi - np.pi / 2
         
-        target_state = to_torch(np.concatenate(
-                    (target_pos,
-                    np.zeros(shape=(num_reset, 2)), 
-                    target_angle), 
-                    axis=-1))
-
-        home_pos = torch.zeros(size=(num_reset, len(self.robot_dofs_idx)))
-
-        self.robot.control_dofs_position(position=home_pos, 
-                                        dofs_idx_local=self.robot_dofs_idx, 
-                                        envs_idx=envs_idx
-                                     )
-                
-        self.cube.set_dofs_position(block_state, 
-                                    dofs_idx_local=self.cube_dofs_idx, 
-                                    envs_idx=envs_idx) 
-        self.plane.set_dofs_position(target_state,
-                                     dofs_idx_local=self.marker_dofs_idx,
-                                     envs_idx=envs_idx)
-
-    def step(self, action=None):
-        # action: agent_pos(eef_pos)
-        self.scene.step()
+            block_positions.append([block_x, block_y, block_z])
+            target_positions.append([target_x, target_y, target_z])
+            block_angles.append(block_angle)
+            target_angles.append(target_angle)
     
+        block_pos = np.array(block_positions)
+        target_pos = np.array(target_positions)
+        block_angle = np.array(block_angles).reshape(-1, 1)
+        target_angle = np.array(target_angles).reshape(-1, 1)
+        
+        block_state = to_torch(np.concatenate([
+            block_pos,
+            np.zeros(shape=(num_reset, 2)),  # roll & pitch 保持为0
+            block_angle
+        ], axis=-1))
+        
+        target_state = to_torch(np.concatenate([
+            target_pos,
+            np.zeros(shape=(num_reset, 2)),  # roll & pitch 保持为0
+            target_angle
+        ], axis=-1))
+        
+        home_pos = torch.zeros(size=(num_reset, len(self.robot_dofs_idx)), device=gs.device)
 
-    def ikine(self, ): 
-        pass
+        self.robot.set_dofs_position(
+            position=home_pos,
+            dofs_idx_local=self.robot_dofs_idx,
+            envs_idx=envs_idx
+        )
+        
+        self.cube.set_dofs_position(
+            block_state,
+            dofs_idx_local=self.cube_dofs_idx,
+            envs_idx=envs_idx
+        )
+        
+        self.plane.set_dofs_position(
+            target_state,
+            dofs_idx_local=self.marker_dofs_idx,
+            envs_idx=envs_idx
+        )
+        
+        observation = self._get_obs(rgb=True, envs_idx=envs_idx)
+        return observation
 
     def reset(self,):
-        self.reset_idx(envs_idx=[i for i in range(self.n_envs)])
+        self.reset_idx(envs_idx=torch.arange(self.n_envs, device=gs.device, dtype=torch.int16)
+    )
+        
+    def step(self, action=None, envs_idx = None):
+        # action: agent_pos(eef_pos) n_envs * action_x, action_y
+        # one action, multi sim
+        if envs_idx is None:
+            envs_idx = torch.arange(self.n_envs)
+        n_steps = int(self.sim_hz // self.control_hz)
+        if action is not None:
+            shape = np.shape(action)
+            if shape[0] != len(envs_idx): 
+                raise ValueError("Action_dims are not compatible with n_envs")
+            else: 
+               quat = torch.tile(torch.tensor([0, 0, 1, 0]), (len(envs_idx), 1))
+               qpos = self._ikine(self.tcp, action, quat, envs_idx)
+               self.robot.control_dofs_position(position=qpos[:, 0:7], # does not control tcp joints
+                                        dofs_idx_local=self.robot_dofs_idx[0:7], 
+                                        envs_idx=envs_idx
+                                     ) 
+        for _ in range(n_steps):
+            self.scene.step()
 
-    def _get_obs(self, rgb=True, depth=False, segmentation=False, normal=False):
+        # TODO done condition
+        observation = self._get_obs(rgb=True, envs_idx=envs_idx)
+        info = self._get_info(envs_idx=envs_idx)
+        done = False
+        reward = 0
 
-        # img (list:[w, h, 3],NoneType,NoneType,NoneType)
-        img = self.cam.render(rgb=rgb, depth=depth, segmentation=segmentation, normal=normal) 
-        self.render_cache = img
-
-        # jnt_pos = [self.robot.get_dofs_position(idx, envs_idx=np.arange(self.n_envs)) for idx in self.dofs_idx]
-        agent_pos = self.robot.get_links_pos(self.eef_idx, envs_idx=np.arange(self.n_envs))
-        obs = {
-            'image': img,
-            'agent_pos': agent_pos
-        }
-        marker_pos = self.plane.get_links_pos(self.marker_idx, envs_idx=np.arange(self.n_envs))    
-        print(marker_pos)    
-        return obs
-    
-    def _get_info(self,):
-
-        info = {
-            "agent_pos": self.eef.get_pos(),
-            "goal_pos": self.plane.get_links_pos(self.marker_idx)
-        }
-        return info
+        return observation, reward, done, info
     
     def render(self, mode='rgb_array'):
         assert mode == 'rgb_array'
@@ -269,6 +309,7 @@ class PushTEnv():
         if self.render_cache is None:
             self._get_obs()
         return self.render_cache
+    
     
     def start_recording(self, ):
         assert self.cam is not None
@@ -286,16 +327,71 @@ class PushTEnv():
         self.cam.stop_recording(save_to_filename=filename)
         
         os.chdir(old_dir)
+
+    def _ikine(self, link, pos, quat, envs_idx): 
+        qpos = self.robot.inverse_kinematics(
+        link = link,
+        pos = pos,
+        quat = quat,
+        dofs_idx_local=self.robot_dofs_idx[0:7],
+        envs_idx=envs_idx
+       )
+        return qpos
+
+
+    def _get_obs(self, rgb=True, depth=False, segmentation=False, normal=False, envs_idx=None):
+
+        if envs_idx is None:
+            envs_idx = torch.arange(self.n_envs, device=gs.device, dtype=torch.int16)
+        else:
+            if isinstance(envs_idx, torch.Tensor) == False:
+                raise ValueError("Dtype for envs_idx is Torch Tensor!")
+
+        # img (list:[w, h, 3],NoneType,NoneType,NoneType)
+        img = self.cam.render(rgb=rgb, depth=depth, segmentation=segmentation, normal=normal) 
+        self.render_cache = img
+
+        # jnt_pos = [self.robot.get_dofs_position(idx, envs_idx=np.arange(self.n_envs)) for idx in self.dofs_idx]
+        agent_pos = self.robot.get_links_pos(self.tcp_idx, envs_idx)
+        idx = to_numpy(envs_idx, float=False)
+        obs = {
+            'envs_idx': envs_idx,
+            'image': img[0][idx,:],
+            'agent_pos': agent_pos[idx, :]
+        }
+        marker_pos = self.plane.get_links_pos(self.marker_idx, envs_idx)    
+       #  print(marker_pos)    
+        return obs
+    
+    def _get_info(self, envs_idx = None):
+        if envs_idx is None:
+            envs_idx = torch.arange(self.n_envs, device=gs.device)
+        else:
+            if isinstance(envs_idx, torch.Tensor) == False:
+                raise ValueError("Dtype for envs_idx is Torch Tensor!")
+        idx = to_numpy(envs_idx, float=False) 
+        info = {
+            'envs_idx': envs_idx,
+            "agent_pos": self.tcp.get_pos()[idx, :],
+            "goal_pos": self.plane.get_links_pos(self.marker_idx)[idx, :],
+        }
+        return info
+    
     
 if __name__ == '__main__':
     env = PushTEnv()
-    env.start(show_camera=False, show_interact_viewer=False)
+    env.start(n_envs = 2, show_camera=False, show_interact_viewer=False, 
+              env_separate=False, seed=[0, 1])
     env.start_recording()
     
-    for i in range(2000):
+    for i in range(500):
+        # env.step(action=torch.tensor([[0.1, 0.1],
+        #                               [0.1, 0.1]]))
         env.step()
         env._get_obs()
-        if i % 1000 == 0: # render per 10 frames
+        if i % 250 == 0: 
             env.reset()
-        #   print(env.render())
+            print(np.shape(env.render()[0]))
+            # Problem: Changing camera rendering modes(for each arm)
+    
     env.stop_recording()
