@@ -157,7 +157,7 @@ class PushTEnv(gym.Env):
             fov=40,
             GUI=show_camera,
         )
-        self.scene.build(n_envs=n_envs, env_spacing=(1, 1))
+        self.scene.build(n_envs=n_envs)
         # print(self.cube.get_joint('cube_plane_joint').dof_idx_local)
 
         # print(self.cube)
@@ -179,15 +179,15 @@ class PushTEnv(gym.Env):
             dofs_idx_local = self.robot_dofs_idx,
         )
         self.render_cache = None
-
         # self.seed(seed=seed)
         # self.reset()
-
+        self.seed()
 
     # setting seed for generator
     def seed(self, seed=None):
         if self._seed is None: # generate system level seed
             self._seed = np.random.randint(0, 25536)
+            self.np_random_generators = None
         if seed is not None:
             if self.n_envs is None: raise ValueError("Envs have not been initialized!")
             if len(seed) != self.n_envs: raise ValueError("Given seed length is not" \
@@ -209,7 +209,7 @@ class PushTEnv(gym.Env):
         for i, env_idx in enumerate(envs_idx):
             env_idx = int(env_idx)
             
-            if hasattr(self, 'np_random_generators') and env_idx < len(self.np_random_generators):
+            if hasattr(self, 'np_random_generators'):
                 rng = self.np_random_generators[env_idx]
             else:
                 raise ValueError("ENV-LEVEL seeds have not been defined!")
@@ -380,10 +380,12 @@ class PushTEnv(gym.Env):
     
 if __name__ == '__main__':
     env = PushTEnv()
-    env.start(n_envs = 2, show_camera=False, show_interact_viewer=False, 
-              env_separate=False, seed=[0, 1])
-    env.start_recording()
-    
+    env.start(n_envs=10, show_camera=False, show_interact_viewer=False, 
+              env_separate=True, seed=[0, 1])
+    env.seed(np.arange(10))
+    env.reset()
+
+    # env.start_recording()
     for i in range(500):
         # env.step(action=torch.tensor([[0.1, 0.1],
         #                               [0.1, 0.1]]))
@@ -393,5 +395,5 @@ if __name__ == '__main__':
             env.reset()
             print(np.shape(env.render()[0]))
             # Problem: Changing camera rendering modes(for each arm)
-    
-    env.stop_recording()
+        print(np.shape(env.render()[0])) 
+    # env.stop_recording()
