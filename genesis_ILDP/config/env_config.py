@@ -12,3 +12,4 @@ env_path = {
     'cube': cube_path
 }
 target_folder = os.path.join(file_path, '../data/video/')
+target_folder1 = os.path.join(file_path, '../data/media/')

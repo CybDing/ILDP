@@ -25,8 +25,10 @@ class PushTEnv(gym.Env):
                  xlim=.5,
                  ylim=.5,
                  seed=None, # seed 
-                 path=env_path,
+                 model_path=env_path,
                 #  cube_w = 0.1
+                 fps = 30,
+                 show_fps = True,
                  ):
         # super().__init__()
 
@@ -40,8 +42,10 @@ class PushTEnv(gym.Env):
         self.np_random = None
         self.block_lim = {'xlim': xlim, 'ylim': ylim}
         # self.cube_w = cube_w
-        self.path = path
+        self.path = model_path
         self.env_seed = None 
+        self.fps = fps
+        self.show_fps = show_fps
 
         self.observation_space = spaces.Dict({
             'images': spaces.Box(
@@ -78,6 +82,7 @@ class PushTEnv(gym.Env):
             backend = gs.gpu
         )
         self.scene = gs.Scene(
+            show_FPS=self.show_fps,
             sim_options=gs.options.SimOptions(dt=1/self.sim_hz, substeps=1),
             viewer_options=gs.options.ViewerOptions(
                 max_FPS=int(self.sim_hz),
@@ -272,7 +277,7 @@ class PushTEnv(gym.Env):
         return observation
 
     def reset(self,):
-        self.reset_idx(envs_idx=torch.arange(self.n_envs, device=gs.device, dtype=torch.int16)
+        return self.reset_idx(envs_idx=torch.arange(self.n_envs, device=gs.device, dtype=torch.int16)
     )
         
     def step(self, action=None, envs_idx = None):
@@ -295,6 +300,8 @@ class PushTEnv(gym.Env):
         for _ in range(n_steps):
             self.scene.step()
 
+        ### JUDGE after sim steps, preventing misjudge the done condition
+        
         # TODO done condition
         observation = self._get_obs(rgb=True, envs_idx=envs_idx)
         info = self._get_info(envs_idx=envs_idx)
@@ -324,7 +331,7 @@ class PushTEnv(gym.Env):
 
         if filename is None:
             filename = os.path.join(target_folder, time.strftime("%Y%m%d-%H-%M") + "-pushT-env.mp4")
-        self.cam.stop_recording(save_to_filename=filename)
+        self.cam.stop_recording(save_to_filename=filename, fps=self.fps)
         
         os.chdir(old_dir)
 
@@ -356,7 +363,7 @@ class PushTEnv(gym.Env):
         idx = to_numpy(envs_idx, float=False)
         obs = {
             'envs_idx': envs_idx,
-            'image': img[0][idx,:],
+            'image': to_torch(img[0][idx,:]),
             'agent_pos': agent_pos[idx, :]
         }
         marker_pos = self.plane.get_links_pos(self.marker_idx, envs_idx)    
