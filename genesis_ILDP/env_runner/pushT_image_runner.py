@@ -125,7 +125,7 @@ class PushTImageRunner(BaseImageRunner):
         pbar.close()
 
         if self.enable_render: 
-            self.env.stop_recording()
+            self.env.stop_recording(self.base_generate_path)
             self._process_generated_videos()
             self._cleanup_temp_files()
 
@@ -136,7 +136,7 @@ class PushTImageRunner(BaseImageRunner):
 
     def _setup_envs(self,):
 
-        self.env.start(n_envs=self.n_envs)
+        self.env.start(n_envs=self.n_envs, env_separate=True)
         print(f"------SETUP COMPLETE!------\
               \n Configuration:  n_test={self.n_test},  n_train={self.n_train}, \
               n_envs={self.n_envs}\n max_steps={self.max_steps}")
@@ -289,7 +289,7 @@ class PushTImageRunner(BaseImageRunner):
 
             video_path = self.file_path
             if video_path is not None:
-                sim_video = wandb.Video(video_path)
+                sim_video = wandb.Video(video_path[i])
                 log_data[prefix + f'sim_video_{seed}'] = sim_video
 
         for prefix, value in max_rewards.items():
