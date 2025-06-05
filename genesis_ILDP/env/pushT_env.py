@@ -367,7 +367,7 @@ class PushTEnv(gym.Env):
         obs = {
             'envs_idx': envs_idx,
             'image': to_torch(img[0][idx,:]),
-            'agent_pos': agent_pos[idx, :]
+            'agent_pos': agent_pos[idx, :2]
         }
         marker_pos = self.plane.get_links_pos(self.marker_idx, envs_idx)    
        #  print(marker_pos)    
@@ -382,8 +382,8 @@ class PushTEnv(gym.Env):
         idx = to_numpy(envs_idx, float=False) 
         info = {
             'envs_idx': envs_idx,
-            "agent_pos": self.tcp.get_pos()[idx, :],
-            "goal_pos": self.plane.get_links_pos(self.marker_idx)[idx, :],
+            "agent_pos": self.tcp.get_pos()[idx, :2],
+            "goal_pos": self.plane.get_links_pos(self.marker_idx)[idx, :2],
         }
         return info
     

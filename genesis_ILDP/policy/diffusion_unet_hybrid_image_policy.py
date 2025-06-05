@@ -8,10 +8,10 @@ import torch.nn.functional as F
 from einops import rearrange, reduce
 from diffusers.schedulers.scheduling_ddpm import DDPMScheduler
 
-from genesis_ILDP.model.common.normalizer import LinearNormalizer
+from diffusion_policy.model.common.normalizer import LinearNormalizer
 from genesis_ILDP.policy.base_image_policy import BaseImagePolicy
-from genesis_ILDP.model.diffusion.conditional_unet1d import ConditionalUnet1D
-from genesis_ILDP.model.diffusion.mask_generator import LowdimMaskGenerator
+from diffusion_policy.model.diffusion.conditional_unet1d import ConditionalUnet1D
+from diffusion_policy.model.diffusion.mask_generator import LowdimMaskGenerator
 from genesis_ILDP.common.robomimic_config_util import get_robomimic_config
 from robomimic.algo import algo_factory
 from robomimic.algo.algo import PolicyAlgo
@@ -220,6 +220,11 @@ class DiffusionUnetHybridImagePolicy(BaseImagePolicy):
         """
         assert 'past_action' not in obs_dict # not implemented yet
         # normalize input
+
+        # In predict_action method, before line 223:
+        print("obs_dict keys:", obs_dict.keys())
+        print("normalizer params keys:", self.normalizer.params_dict.keys())
+        
         nobs = self.normalizer.normalize(obs_dict)
         value = next(iter(nobs.values()))
         B, To = value.shape[:2]
@@ -238,6 +243,9 @@ class DiffusionUnetHybridImagePolicy(BaseImagePolicy):
         if self.obs_as_global_cond:
             # condition through global feature
             this_nobs = dict_apply(nobs, lambda x: x[:,:To,...].reshape(-1,*x.shape[2:]))
+            # In predict_action method, before nobs_features = self.obs_encoder(this_nobs)
+            print("Image shape:", this_nobs['image'].shape)
+            print("Expected input shape:", self.obs_encoder.obs_nets['image'].input_shape)
             nobs_features = self.obs_encoder(this_nobs)
             # reshape back to B, Do
             global_cond = nobs_features.reshape(B, -1)
