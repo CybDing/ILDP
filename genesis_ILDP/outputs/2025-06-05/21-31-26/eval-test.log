@@ -1,3 +1,0 @@
-[2025-06-05 21:31:35,249][hydra.utils][ERROR] - Error getting class at genesis_ILDP.workspace.train_diffusion_unet_hybrid_workspace.TrainDiffusionUnetHybridWorkspace: Error loading 'genesis_ILDP.workspace.train_diffusion_unet_hybrid_workspace.TrainDiffusionUnetHybridWorkspace':
-ModuleNotFoundError("No module named 'einops'")
-Are you sure that 'train_diffusion_unet_hybrid_workspace' is importable from module 'genesis_ILDP.workspace'?
