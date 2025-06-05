@@ -1,0 +1,31 @@
+[2025-06-05 23:21:43,720][diffusion_policy.model.diffusion.conditional_unet1d][INFO] - number of parameters: 2.515119e+08
+[2025-06-05 23:21:46,045][diffusion_policy.model.diffusion.conditional_unet1d][INFO] - number of parameters: 2.515119e+08
+[2025-06-05 23:21:49,297][OpenGL.acceleratesupport][INFO] - No OpenGL_accelerate module loaded: No module named 'OpenGL_accelerate'
+[2025-06-05 23:21:49,816][genesis][INFO] - ~<╭─────────────────────────────────────────────────────────────────────────────────────╮>~
+[2025-06-05 23:21:49,816][genesis][INFO] - ~<│┈┉┈┉┈┉┈┉┈┉┈┉┈┉┈┉┈┉┈┉┈┉┈┉┈┉┈┉┈┉┈┉┈┉┈┉┈┉>~ ~~~~<Genesis>~~~~ ~<┈┉┈┉┈┉┈┉┈┉┈┉┈┉┈┉┈┉┈┉┈┉┈┉┈┉┈┉┈┉┈┉┈┉┈┉┈┉│>~
+[2025-06-05 23:21:49,816][genesis][INFO] - ~<╰─────────────────────────────────────────────────────────────────────────────────────╯>~
+[2025-06-05 23:21:50,062][genesis][INFO] - Running on ~~<[NVIDIA GeForce RTX 4090]>~~ with backend ~~<gs.cuda>~~. Device memory: ~~<23.65>~~ GB.
+[2025-06-05 23:21:50,065][genesis][INFO] - 🚀 Genesis initialized. 🔖 version: ~~<0.2.1>~~, 🌱 seed: ~~<0>~~, 📏 precision: '~~<32>~~', 🐛 debug: ~~<False>~~, 🎨 theme: '~~<dark>~~'.
+[2025-06-05 23:21:50,409][genesis][INFO] - Scene ~~~<<0b1ceb5>>~~~ created.
+[2025-06-05 23:21:50,410][genesis][INFO] - Adding ~<<gs.RigidEntity>>~. idx: ~<0>~, uid: ~~~<<03054f5>>~~~, morph: ~<<gs.morphs.URDF(file='/home/jiaoda/LeqiDing/ILDP/genesis_ILDP/assets/roboticArms/urdf/plane.urdf')>>~, material: ~<<gs.materials.Rigid>>~.
+[2025-06-05 23:21:50,440][genesis][INFO] - Adding ~<<gs.RigidEntity>>~. idx: ~<1>~, uid: ~~~<<de31ec9>>~~~, morph: ~<<gs.morphs.URDF(file='/home/jiaoda/LeqiDing/ILDP/genesis_ILDP/assets/roboticArms/urdf/rizon44/flexiv_rizon4_kinematics.urdf')>>~, material: ~<<gs.materials.Rigid>>~.
+[2025-06-05 23:21:50,936][genesis][INFO] - Adding ~<<gs.RigidEntity>>~. idx: ~<2>~, uid: ~~~<<ca8d552>>~~~, morph: ~<<gs.morphs.URDF(file='/home/jiaoda/LeqiDing/ILDP/genesis_ILDP/assets/roboticArms/urdf/TCube.urdf')>>~, material: ~<<gs.materials.Rigid>>~.
+[2025-06-05 23:21:50,969][genesis][INFO] - Building scene ~~~<<0b1ceb5>>~~~...
+[2025-06-05 23:21:51,143][genesis][WARNING] - Constraint solver time constant was increased to avoid numerical instability (from `0` to `0.01`). Decrease simulation timestep to avoid altering the original value.
+[2025-06-05 23:21:51,434][genesis][WARNING] - Constraint solver time constant was increased to avoid numerical instability (from `0` to `0.01`). Decrease simulation timestep to avoid altering the original value.
+[2025-06-05 23:21:52,191][genesis][WARNING] - Constraint solver time constant was increased to avoid numerical instability (from `0` to `0.01`). Decrease simulation timestep to avoid altering the original value.
+[2025-06-05 23:21:52,375][genesis][WARNING] - Constraint solver time constant was increased to avoid numerical instability (from `0` to `0.01`). Decrease simulation timestep to avoid altering the original value.
+[2025-06-05 23:21:55,701][genesis][INFO] - Compiling simulation kernels...
+[2025-06-05 23:22:08,101][genesis][INFO] - Building visualizer...
+[2025-06-05 23:22:09,302][genesis][WARNING] - This property is deprecated and will be removed in future release. Please use 'dof_idx_local' instead.
+[2025-06-05 23:22:09,302][genesis][WARNING] - This property is deprecated and will be removed in future release. Please use 'dof_idx_local' instead.
+[2025-06-05 23:22:09,302][genesis][WARNING] - This property is deprecated and will be removed in future release. Please use 'dof_idx_local' instead.
+[2025-06-05 23:22:09,302][genesis][WARNING] - This property is deprecated and will be removed in future release. Please use 'dof_idx_local' instead.
+[2025-06-05 23:22:09,302][genesis][WARNING] - This property is deprecated and will be removed in future release. Please use 'dof_idx_local' instead.
+[2025-06-05 23:22:09,302][genesis][WARNING] - This property is deprecated and will be removed in future release. Please use 'dof_idx_local' instead.
+[2025-06-05 23:22:09,302][genesis][WARNING] - This property is deprecated and will be removed in future release. Please use 'dof_idx_local' instead.
+[2025-06-05 23:22:09,302][genesis][WARNING] - This property is deprecated and will be removed in future release. Please use 'dof_idx_local' instead.
+[2025-06-05 23:22:09,302][genesis][WARNING] - This property is deprecated and will be removed in future release. Please use 'dof_idx_local' instead.
+[2025-06-05 23:22:09,302][genesis][WARNING] - This property is deprecated and will be removed in future release. Please use 'dof_idx_local' instead.
+[2025-06-05 23:22:11,726][genesis][ERROR] - AssertionError: 
+[2025-06-05 23:22:11,727][genesis][INFO] - 💤 Exiting Genesis and caching compiled kernels...

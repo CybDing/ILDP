@@ -1,0 +1,6 @@
+einops,
+diffusers,
+pandas,
+zarr,
+robomimics,
+gym,
