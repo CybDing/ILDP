@@ -30,19 +30,21 @@ class PushTImageRunner(BaseImageRunner):
     def __init__(self, 
                  output_dir,
                  n_train = 1, # Using train seed 
+                 n_train_vis = 1,
                  n_test = 2, # Using test seed
+                 n_test_vis = 2,
                  n_obs_steps = 8,
                  n_action_steps = 8,
                  max_steps=200,
-                 render_size=128,
+                 image_shape=(96, 96),
                  tqdm_interval_sec=1.0,
                  n_envs = None,
                  fps = 20,
-                 crf = 22, # video quality
+                #  crf = 22, # video quality
                  past_action=False,
-                 seed_train = 0,
-                 seed_test = 10000, # assert data collected 
-                 # does not reach 10000 episodes
+                 train_start_seed = 0,
+                 test_start_seed = 100000, 
+                 # does not reach 100000 episodes
                  enable_render = True
                  ):
         super().__init__(output_dir)
@@ -54,7 +56,7 @@ class PushTImageRunner(BaseImageRunner):
 
         self.env = MultiStepWrapper(
                     PushTEnv(
-                        render_size=render_size,
+                        render_size=image_shape,
                         fps = fps,
                         show_fps=False
                     ),
@@ -65,13 +67,15 @@ class PushTImageRunner(BaseImageRunner):
             )
         self.n_train = n_train
         self.n_test = n_test
+        self.n_train_vis = min(self.n_train, n_train_vis)
+        self.n_test_vis = min(self.n_test, n_test_vis)
         self.n_obs_steps = n_obs_steps
         self.n_action_steps = n_action_steps
         # self.device = gs.device
         self.max_steps = max_steps
-        self.past_action = False
-        self.seed_train = seed_train
-        self.seed_test = seed_test
+        self.past_action = past_action
+        self.seed_train = train_start_seed
+        self.seed_test = test_start_seed
         self.file_path = list()
         self.base_generate_path = None
         self.enable_render = enable_render
@@ -276,27 +280,36 @@ class PushTImageRunner(BaseImageRunner):
     def _create_log_data(self, ):
         max_rewards = collections.defaultdict(list)
         log_data = dict()
-
+    
         for i in range(self.n_envs):
             seed = self.env_seeds[i]
             if i < self.n_train:
                 prefix = 'train/'
-            else: prefix = 'test/'
+                should_upload_video = i < self.n_train_vis
+            else: 
+                prefix = 'test/'
+                test_idx = i - self.n_train
+                should_upload_video = test_idx < self.n_test_vis
+                
             max_reward = np.max(np.array(self.episode_reward[i]))
             
             max_rewards[prefix].append(max_reward)
             log_data[prefix + f'sim_max_reward_{seed}'] = max_reward
-
-            video_path = self.file_path
-            if video_path is not None:
-                sim_video = wandb.Video(video_path)
-                log_data[prefix + f'sim_video_{seed}'] = sim_video
-
+    
+            if should_upload_video and self.file_path is not None and i < len(self.file_path):
+                video_path = self.file_path[i]
+                if Path(video_path).exists(): 
+                    sim_video = wandb.Video(video_path)
+                    log_data[prefix + f'sim_video_{seed}'] = sim_video
+                    print(f"Uploading video: {prefix}sim_video_{seed} from {video_path}")
+                else:
+                    print(f"Warning: Video file not found: {video_path}")
+    
         for prefix, value in max_rewards.items():
             name = prefix + 'mean_score'
             value = np.mean(value)
             log_data[name] = value
-
+    
         return log_data
 
 if __name__ == "__main__":

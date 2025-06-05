@@ -1,4 +1,4 @@
-_target_: genesis_ILDP.workspace.simple_train_diffusion_unet_hybrid_workspace.SimpleTrainDiffusionUnetHybridWorkspace
+_target_: diffusion_policy.workspace.train_diffusion_unet_hybrid_workspace.TrainDiffusionUnetHybridWorkspace
 checkpoint:
   save_last_ckpt: true
   save_last_snapshot: false
@@ -8,7 +8,7 @@ checkpoint:
     mode: max
     monitor_key: test_mean_score
 dataloader:
-  batch_size: 10
+  batch_size: 4
   num_workers: 8
   persistent_workers: false
   pin_memory: true
@@ -22,23 +22,23 @@ ema:
   power: 0.75
   update_after_step: 0
 exp_name: default
-horizon: 4
+horizon: 16
 keypoint_visible_rate: 1.0
 logging:
   group: null
   id: null
   mode: online
-  name: 2024.11.30-20.20.06_train_diffusion_unet_hybrid_ur5_grab_image
+  name: 2023.01.16-20.20.06_train_diffusion_unet_hybrid_pusht_image
   project: diffusion_policy_debug
   resume: true
   tags:
   - train_diffusion_unet_hybrid
-  - ur5_grab_image
+  - pusht_image
   - default
 multi_run:
-  run_dir: data/outputs/2024.11.30/20.20.06_train_diffusion_unet_hybrid_ur5_grab_image
-  wandb_name_base: 2024.11.30-20.20.06_train_diffusion_unet_hybrid_ur5_grab_image
-n_action_steps: 3
+  run_dir: data/outputs/2023.01.16/20.20.06_train_diffusion_unet_hybrid_pusht_image
+  wandb_name_base: 2023.01.16-20.20.06_train_diffusion_unet_hybrid_pusht_image
+n_action_steps: 8
 n_latency_steps: 0
 n_obs_steps: 2
 name: train_diffusion_unet_hybrid
@@ -64,9 +64,9 @@ policy:
   - 1024
   - 2048
   eval_fixed_crop: true
-  horizon: 4
+  horizon: 16
   kernel_size: 5
-  n_action_steps: 3
+  n_action_steps: 8
   n_groups: 8
   n_obs_steps: 2
   noise_scheduler:
@@ -96,49 +96,46 @@ policy:
         - 96
         - 96
         type: rgb
-# shape_meta:
-#   action:
-#     shape:
-#     - 2
-#   obs:
-#     agent_pos:
-#       shape:
-#       - 2
-#       type: low_dim
-#     image:
-#       shape:
-#       - 3
-#       - 96
-#       - 96
-#       type: rgb
+shape_meta:
+  action:
+    shape:
+    - 2
+  obs:
+    agent_pos:
+      shape:
+      - 2
+      type: low_dim
+    image:
+      shape:
+      - 3
+      - 96
+      - 96
+      type: rgb
 task:
   dataset:
-    _target_: imitation_learning_dp.dataset.ur5_grab_image_dataset.UR5GrabImageDataset
-    horizon: 4
+    _target_: diffusion_policy.dataset.pusht_image_dataset.PushTImageDataset
+    horizon: 16
     max_train_episodes: 90
-    pad_after: 20
+    pad_after: 7
     pad_before: 1
     seed: 42
     val_ratio: 0.02
-    zarr_path: data/ur5_grab/ur5_grab.zarr
+    zarr_path: data/pusht/pusht_cchi_v7_replay.zarr
   env_runner:
-    _target_: imitation_learning_dp.env_runner.ur5_grab_image_runner.UR5GrabImageRunner
+    _target_: diffusion_policy.env_runner.pusht_image_runner.PushTImageRunner
     fps: 10
     legacy_test: true
     max_steps: 300
-    n_action_steps: 3
+    n_action_steps: 8
     n_envs: null
     n_obs_steps: 2
-    n_test: 2
-    n_test_vis: 1
-    n_train: 2
-    n_train_vis: 1
+    n_test: 50
+    n_test_vis: 4
+    n_train: 6
+    n_train_vis: 2
     past_action: false
     test_start_seed: 100000
     train_start_seed: 0
-  env:
-    _target_: imitation_learning_dp.env.ur5_grab.ur5_grab_image_env.UR5GrabImageEnv
-    render_size: 96
   image_shape:
   - 3
   - 96
@@ -159,9 +156,9 @@ task:
         - 96
         - 96
         type: rgb
-task_name: ur5_grab_runner
+task_name: pusht_image
 training:
-  checkpoint_every: 5
+  checkpoint_every: 50
   debug: false
   device: cuda:0
   gradient_accumulate_every: 1
@@ -169,7 +166,7 @@ training:
   lr_warmup_steps: 500
   max_train_steps: null
   max_val_steps: null
-  num_epochs: 16
+  num_epochs: 3050
   resume: true
   rollout_every: 50
   sample_every: 5
@@ -178,7 +175,7 @@ training:
   use_ema: true
   val_every: 1
 val_dataloader:
-  batch_size: 64
+  batch_size: 4
   num_workers: 8
   persistent_workers: false
   pin_memory: true
