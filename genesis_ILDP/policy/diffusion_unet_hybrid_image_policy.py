@@ -1,6 +1,5 @@
 # Copied from diffusion policy repository
 
-
 from typing import Dict
 import math
 import torch
@@ -9,23 +8,22 @@ import torch.nn.functional as F
 from einops import rearrange, reduce
 from diffusers.schedulers.scheduling_ddpm import DDPMScheduler
 
-from diffusion_policy.model.common.normalizer import LinearNormalizer
-from diffusion_policy.policy.base_image_policy import BaseImagePolicy
-from diffusion_policy.model.diffusion.conditional_unet1d import ConditionalUnet1D
-from diffusion_policy.model.diffusion.mask_generator import LowdimMaskGenerator
-from diffusion_policy.common.robomimic_config_util import get_robomimic_config
+from genesis_ILDP.model.common.normalizer import LinearNormalizer
+from genesis_ILDP.policy.base_image_policy import BaseImagePolicy
+from genesis_ILDP.model.diffusion.conditional_unet1d import ConditionalUnet1D
+from genesis_ILDP.model.diffusion.mask_generator import LowdimMaskGenerator
+from genesis_ILDP.common.robomimic_config_util import get_robomimic_config
 from robomimic.algo import algo_factory
 from robomimic.algo.algo import PolicyAlgo
 import robomimic.utils.obs_utils as ObsUtils
 import robomimic.models.base_nets as rmbn
 import diffusion_policy.model.vision.crop_randomizer as dmvc
-from diffusion_policy.common.pytorch_util import dict_apply, replace_submodules
-
+from genesis_ILDP.common.pytorch_util import dict_apply, replace_submodules
 
 class DiffusionUnetHybridImagePolicy(BaseImagePolicy):
     def __init__(self, 
             shape_meta: dict,
-            noise_scheduler: DDPMScheduler,
+            noise_scheduler:DDPMScheduler,
             horizon, 
             n_action_steps, 
             n_obs_steps,

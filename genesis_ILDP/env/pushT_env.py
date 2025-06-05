@@ -21,7 +21,7 @@ class PushTEnv(gym.Env):
     metadata = {"render.mode": ["rgb_array"], "video.frames_per_second": 10}
 
     def __init__(self,
-                 render_size=128,
+                 render_size=(96, 96),
                  xlim=.5,
                  ylim=.5,
                  seed=None, # seed 
@@ -51,19 +51,19 @@ class PushTEnv(gym.Env):
             'images': spaces.Box(
                 low=0.,
                 high=1.,
-                shape=(3, render_size, render_size),
+                shape=(3,) + render_size,
                 dtype = np.float64
             ),
             'agent_pos': spaces.Box(
-                low=np.array([-xlim, -ylim], dtype=np.float32),
-                high=np.array([xlim, ylim], dtype=np.float32),
+                low=np.array([0.2, 0.2], dtype=np.float32),
+                high=np.array([xlim+0.2, ylim+0.2], dtype=np.float32),
                 shape=(2, ),
                 dtype=np.float32
             )
         })
         self.action_space = spaces.Box(
-            low=np.array([-xlim, -ylim], dtype=np.float32),
-            high=np.array([xlim, ylim], dtype=np.float32),
+            low=np.array([0.0, 0.0], dtype=np.float32),
+            high=np.array([xlim+0.4, ylim+0.4], dtype=np.float32),
             shape=(2, ),
             dtype=np.float32
         )
@@ -86,8 +86,8 @@ class PushTEnv(gym.Env):
             sim_options=gs.options.SimOptions(dt=1/self.sim_hz, substeps=1),
             viewer_options=gs.options.ViewerOptions(
                 max_FPS=int(self.sim_hz),
-                camera_pos=(2.5, 0.0, 2.5),
-                camera_lookat=(-0.12, -0.12, 0.6),
+                camera_pos=(2, 2, 1.5),
+                camera_lookat=(0.7, 0.7, 0.3),
                 camera_fov=40 # angle look at
             ),
 
@@ -137,29 +137,23 @@ class PushTEnv(gym.Env):
         self.cube : gs.engine.entities.RigidEntity = self.scene.add_entity(
             gs.morphs.URDF(
                 pos = (0, 0, 0),
-                file=self.path['cube'],
+                file=self.path['TCube'],
                 collision=True,
                 fixed=True,
                 visualization=True,
                 links_to_keep=[
-                    'cubee',
+                    # 'cubee',
+                    'center',
                 ]
                 )
         )
-
-        # self.cube : gs.engine.RigidEntity = self.scene.add_entity(
-        #     gs.morphs.Box(
-        #         pos=(0.5, 0.5, 0.1),
-        #         size = (0.1, 0.1, 0.1)
-        #     )
-        # )
         # box_baselink_joint, box_baselink
 
         self.cam = self.scene.add_camera(
-            res=(self.render_size, self.render_size),
-            pos=(0.25, 1, 2),
-            lookat=(0.25, 0, 0.0),
-            fov=40,
+            res=self.render_size,
+            pos=(1, 1, 0.7),
+            lookat=(0.7, 0.7, 0.0),
+            fov=60,
             GUI=show_camera,
         )
         self.scene.build(n_envs=n_envs)
@@ -184,8 +178,6 @@ class PushTEnv(gym.Env):
             dofs_idx_local = self.robot_dofs_idx,
         )
         self.render_cache = None
-        # self.seed(seed=seed)
-        # self.reset()
         self.seed()
 
     # setting seed for generator
@@ -219,14 +211,14 @@ class PushTEnv(gym.Env):
             else:
                 raise ValueError("ENV-LEVEL seeds have not been defined!")
             
-            block_x = rng.random() * self.block_lim['xlim']
-            block_y = rng.random() * self.block_lim['ylim'] * 2 - self.block_lim['ylim']
+            block_x = rng.random() * self.block_lim['xlim'] + 0.2
+            block_y = rng.random() * self.block_lim['ylim'] + 0.2
             block_z = 0.05  # 固定高度
             
             block_angle = rng.random() * np.pi / 2
             
-            target_x = rng.random() * self.block_lim['xlim']
-            target_y = rng.random() * self.block_lim['ylim'] * 2 - self.block_lim['ylim']
+            target_x = rng.random() * self.block_lim['xlim'] + 0.2
+            target_y = rng.random() * self.block_lim['ylim'] + 0.2
             target_z = 0.0  # 目标在地面
             
             target_angle = rng.random() * np.pi - np.pi / 2
@@ -254,10 +246,14 @@ class PushTEnv(gym.Env):
         ], axis=-1))
         
         home_pos = torch.zeros(size=(num_reset, len(self.robot_dofs_idx)), device=gs.device)
+        home_pos_down = self._ikine(self.tcp, 
+                                    pos=torch.tensor([0.2, 0.2, 0.05]).repeat(num_reset, 1),
+                                    quat=torch.tensor([0, 0, 1, 0]).repeat(num_reset, 1), 
+                                    envs_idx = envs_idx)[:, 0:7]
 
         self.robot.set_dofs_position(
-            position=home_pos,
-            dofs_idx_local=self.robot_dofs_idx,
+            position=home_pos_down,
+            dofs_idx_local=self.robot_dofs_idx[0:7],
             envs_idx=envs_idx
         )
         
@@ -272,6 +268,13 @@ class PushTEnv(gym.Env):
             dofs_idx_local=self.marker_dofs_idx,
             envs_idx=envs_idx
         )
+        self.robot.control_dofs_position(
+            home_pos_down,
+            dofs_idx_local=self.robot_dofs_idx[0:7],
+            envs_idx=envs_idx
+        ) # stableize initial pos(preventing falling down mistakenly)
+
+        ## TODO control eef to close(1)
         
         observation = self._get_obs(rgb=True, envs_idx=envs_idx)
         return observation
@@ -387,13 +390,13 @@ class PushTEnv(gym.Env):
     
 if __name__ == '__main__':
     env = PushTEnv()
-    env.start(n_envs=10, show_camera=False, show_interact_viewer=False, 
-              env_separate=True, seed=[0, 1])
-    env.seed(np.arange(10))
+    env.start(n_envs=1, show_camera=True, show_interact_viewer=True, 
+              env_separate=False, seed=[0, 1])
+    env.seed(np.arange(1))
     env.reset()
 
     # env.start_recording()
-    for i in range(500):
+    for i in range(10000):
         # env.step(action=torch.tensor([[0.1, 0.1],
         #                               [0.1, 0.1]]))
         env.step()
@@ -402,5 +405,5 @@ if __name__ == '__main__':
             env.reset()
             print(np.shape(env.render()[0]))
             # Problem: Changing camera rendering modes(for each arm)
-        print(np.shape(env.render()[0])) 
+
     # env.stop_recording()
