@@ -129,13 +129,13 @@
 <joint name="Horizontal_joint_bottom1" type="fixed">
     <parent link="marker"/>
     <child link="cubeV1"/>
-    <origin xyz="-0.08 0 0" rpy="0 0 0"/>
+    <origin xyz="0.08 0 0" rpy="0 0 0"/>
 </joint>
 
 <joint name="Horizontal_joint_bottom2" type="fixed">
     <parent link="cubeV1"/>
     <child link="cubeV2"/>
-    <origin xyz="-0.1 0 0" rpy="0 0 0"/>
+    <origin xyz="0.1 0 0" rpy="0 0 0"/>
 </joint>
 
 </robot>
