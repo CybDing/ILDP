@@ -1,6 +1,7 @@
 import time
 import os
 import sys
+from typing import Dict, List, Optional, Tuple, Union
 
 import gym
 import torch
@@ -14,8 +15,8 @@ import glfw
 import requests
 import json
 
-from genesis_ILDP.utils.cuda import *
-from genesis_ILDP.config.env_config import *
+from ..utils.cuda import *
+from ..config.env_config import *
 from shapely.geometry import Polygon
 
 class PushTEnv(gym.Env):
@@ -47,11 +48,12 @@ class PushTEnv(gym.Env):
         self.show_fps = show_fps
         self.device = None
 
-        self.ini_delta_dis = 0
-        self.ini_delta_ang = 0 
-        self.reward0 = None
-        self.poses = None
-        self.keypoints = None
+        # 环境状态变量 (numpy arrays for computation)
+        self.ini_delta_dis: Union[float, np.ndarray] = 0.0
+        self.ini_delta_ang: Union[float, np.ndarray] = 0.0 
+        self.reward0: Optional[float] = None
+        self.poses: Optional[Dict[str, torch.Tensor]] = None  # torch tensors from Genesis API
+        self.keypoints: Optional[Dict[str, np.ndarray]] = None  # numpy arrays for computation
 
         self.observation_space = spaces.Dict({
             'images': spaces.Box(
@@ -203,21 +205,28 @@ class PushTEnv(gym.Env):
             self.np_random_generators = [np.random.default_rng(s) for s in seed]
 
 
-    def reset_idx(self, envs_idx: torch.Tensor):
+    def reset_idx(self, envs_idx: torch.Tensor) -> Dict[str, torch.Tensor]:
+        """重置指定环境的状态
+        Args:
+            envs_idx: torch.Tensor - 需要重置的环境索引 (GPU tensor for Genesis API)
+        Returns:
+            observation: Dict with torch tensors
+        """
         num_reset = envs_idx.shape[0]
         if num_reset == 0:
             return
 
-        block_positions = []
-        target_positions = []
-        block_angles = []
-        target_angles = []
+        # 使用list收集数据，最后转换为numpy再转torch
+        block_positions: List[List[float]] = []
+        target_positions: List[List[float]] = []
+        block_angles: List[float] = []
+        target_angles: List[float] = []
         
-        for i, env_idx in enumerate(envs_idx):
-            env_idx = int(env_idx)
+        for env_idx in envs_idx:
+            env_idx_int = int(env_idx)  # 转为int用于numpy索引
             
             if hasattr(self, 'np_random_generators'):
-                rng = self.np_random_generators[env_idx]
+                rng = self.np_random_generators[env_idx_int]
             else:
                 raise ValueError("ENV-LEVEL seeds have not been defined!")
             
@@ -238,25 +247,28 @@ class PushTEnv(gym.Env):
             block_angles.append(block_angle)
             target_angles.append(target_angle)
     
-        block_pos = np.array(block_positions)
-        target_pos = np.array(target_positions)
-        block_angle = np.array(block_angles).reshape(-1, 1)
-        target_angle = np.array(target_angles).reshape(-1, 1)
+        # numpy arrays for computation
+        block_pos_np = np.array(block_positions, dtype=np.float32)
+        target_pos_np = np.array(target_positions, dtype=np.float32)
+        block_angle_np = np.array(block_angles, dtype=np.float32).reshape(-1, 1)
+        target_angle_np = np.array(target_angles, dtype=np.float32).reshape(-1, 1)
 
-        self.ini_delta_dis = np.linalg.norm(block_pos[:, :2] - target_pos[:, :2], axis=1, keepdims=False)
-        self.ini_delta_ang = np.abs(block_angle[:]- target_angle[:])
+        # 保存初始状态用于奖励计算 (numpy)
+        self.ini_delta_dis = np.linalg.norm(block_pos_np[:, :2] - target_pos_np[:, :2], axis=1, keepdims=False)
+        self.ini_delta_ang = np.abs(block_angle_np - target_angle_np)
         self.reward0 = 1 / (1 + 0.1) * 1 / np.sqrt(1 + 0.1)
         
-        block_state = to_torch(np.concatenate([
-            block_pos,
-            np.zeros(shape=(num_reset, 2)),  # roll & pitch 保持为0
-            block_angle
+        # 转换为torch tensor用于Genesis API
+        block_state_torch = to_torch(np.concatenate([
+            block_pos_np,
+            np.zeros(shape=(num_reset, 2), dtype=np.float32),  # roll & pitch 保持为0
+            block_angle_np
         ], axis=-1))
         
-        target_state = to_torch(np.concatenate([
-            target_pos,
-            np.zeros(shape=(num_reset, 2)),  # roll & pitch 保持为0
-            target_angle
+        target_state_torch = to_torch(np.concatenate([
+            target_pos_np,
+            np.zeros(shape=(num_reset, 2), dtype=np.float32),  # roll & pitch 保持为0
+            target_angle_np
         ], axis=-1))
         
         # home_pos = torch.zeros(size=(num_reset, len(self.robot_dofs_idx)), device=gs.device)
@@ -272,13 +284,13 @@ class PushTEnv(gym.Env):
         )
         
         self.cube.set_dofs_position(
-            block_state,
+            block_state_torch,
             dofs_idx_local=self.cube_dofs_idx,
             envs_idx=envs_idx
         )
         
         self.plane.set_dofs_position(
-            target_state,
+            target_state_torch,
             dofs_idx_local=self.marker_dofs_idx,
             envs_idx=envs_idx
         )
@@ -286,24 +298,30 @@ class PushTEnv(gym.Env):
             home_pos_down,
             dofs_idx_local=self.robot_dofs_idx[0:7],
             envs_idx=envs_idx
-        ) # stableize initial pos(preventing falling down mistakenly)
+        ) # stablize initial pos(preventing falling down mistakenly)
 
-        ## TODO control eef to close(1)
+        # TODO control eef to close(1)
         
         observation = self._get_obs(rgb=True, envs_idx=envs_idx)
         return observation
-
     
 
-    def reset(self,):
-        return self.reset_idx(envs_idx=torch.arange(self.n_envs, device=gs.device, dtype=torch.int16)
-    )
+    def reset(self) -> Dict[str, torch.Tensor]:
+        envs_idx_torch = torch.arange(self.n_envs, device=gs.device, dtype=torch.int32)
+        return self.reset_idx(envs_idx=envs_idx_torch)
         
-    def step(self, action=None, envs_idx = None, cal_all_keypoints=False):
+    def step(self, action: Optional[torch.Tensor] = None, 
+             envs_idx: Optional[torch.Tensor] = None, 
+             cal_all_keypoints: bool = False) -> Tuple[Dict[str, torch.Tensor], Union[float, np.ndarray], List[bool], Dict[str, torch.Tensor]]:
+        """执行环境步骤
+        Args:
+            action: torch.Tensor - 动作 (需要是torch tensor用于Genesis API)
+            envs_idx: torch.Tensor - 环境索引 (GPU tensor)
+        """
         # action: agent_pos(eef_pos) n_envs * action_x, action_y
         # one action, multi sim
         if envs_idx is None:
-            envs_idx = torch.arange(self.n_envs)
+            envs_idx = torch.arange(self.n_envs, device=gs.device, dtype=torch.int32)
         n_steps = int(self.sim_hz // self.control_hz)
         if action is not None:
             shape = np.shape(action)
@@ -321,7 +339,9 @@ class PushTEnv(gym.Env):
 
         self._get_poses(envs_idx) # get Tpos, agent_pos
         self.calculate_all_keypoints()
-        print(self.poses['agent_pos'][0,:2])
+
+        print("eef pose: ", self.poses['agent_pos'][0,:2])
+
         ### JUDGE after sim steps, preventing misjudge the done condition
         observation = self._get_obs(rgb=True, envs_idx=envs_idx)
         info = self._get_info(envs_idx)
@@ -357,13 +377,17 @@ class PushTEnv(gym.Env):
         os.chdir(old_dir)
 
     
-    def calculate_all_keypoints(self, ):
+    def calculate_all_keypoints(self) -> None:
+        """计算所有关键点 (使用numpy进行几何计算)"""
         # dis_ori = R_z * R_y * R_x * dis_direct
 
-        if self.poses is None: self._get_poses()
-        poses = self.poses.copy()
-        cur_rot_ang_z = to_numpy(poses['cur_Tpose'][:,5])
-        tar_rot_ang_z = to_numpy(poses['target_Tpose'][:,5])
+        if self.poses is None: 
+            default_envs = torch.arange(self.n_envs, device=gs.device, dtype=torch.int32)
+            self._get_poses(default_envs)
+        
+        # 转换为numpy进行几何计算
+        cur_rot_ang_z = to_numpy(self.poses['cur_Tpose'][:, 5])
+        tar_rot_ang_z = to_numpy(self.poses['target_Tpose'][:, 5])
 
         dis_direct = np.array([[-0.03, -0.1, 0], [0.03, -0.1, 0], [0.03, -0.03, 0],
                                 [0.23, -0.03, 0], [0.23, 0.03, 0], [0.03, 0.03, 0], 
@@ -378,100 +402,128 @@ class PushTEnv(gym.Env):
         cur_ori_dis = dis_direct @ Rz(cur_rot_ang_z)
         target_ori_dis = dis_direct @ Rz(tar_rot_ang_z)
 
-        cur_center = to_numpy(poses['cur_Tpose'][:,0:3])
-        target_center = to_numpy(poses['target_Tpose'][:,0:3])
+        cur_center = to_numpy(self.poses['cur_Tpose'][:, 0:3])
+        target_center = to_numpy(self.poses['target_Tpose'][:, 0:3])
 
+        # 保存为numpy arrays用于后续几何计算
         self.keypoints = {
-            'cur_keypoints': cur_center + cur_ori_dis,  # broadcasting
-            'target_keypoints': target_center + target_ori_dis
+            'cur_keypoints': cur_center + cur_ori_dis,      # numpy array for geometry
+            'target_keypoints': target_center + target_ori_dis  # numpy array for geometry
         }
     
 
-    def _cal_rewards(self, ):
-        if self.poses is None: self._get_poses()
-        cur_pos = to_numpy(self.poses['cur_Tpose'])
-        tar_pos = to_numpy(self.poses['target_Tpose'])
+    def _cal_rewards(self) -> Union[float, np.ndarray]:
+        """计算奖励 (使用numpy进行数值计算)"""
+        if self.poses is None: 
+            default_envs = torch.arange(self.n_envs, device=gs.device, dtype=torch.int32)
+            self._get_poses(default_envs)
+            
+        # 转换为numpy进行数值计算
+        cur_pos_np = to_numpy(self.poses['cur_Tpose'])
+        tar_pos_np = to_numpy(self.poses['target_Tpose'])
 
-        dis = np.linalg.norm(cur_pos[:, :2]-tar_pos[:, :2])
-        ang = np.abs(cur_pos[:, 5]- tar_pos[:, 5])
+        dis = np.linalg.norm(cur_pos_np[:, :2] - tar_pos_np[:, :2])
+        ang = np.abs(cur_pos_np[:, 5] - tar_pos_np[:, 5])
 
         return 1 / (dis/self.ini_delta_dis + 0.1) / np.sqrt(ang/self.ini_delta_ang + 0.1) - self.reward0
 
 
-    def _ikine(self, link, pos, quat, envs_idx): 
+    def _ikine(self, link: gs.engine.entities.rigid_entity.RigidLink, 
+               pos: torch.Tensor, quat: torch.Tensor, 
+               envs_idx: torch.Tensor) -> torch.Tensor:
+        """逆运动学计算 (Genesis API需要torch tensors)""" 
         qpos = self.robot.inverse_kinematics(
-        link = link,
-        pos = pos,
-        quat = quat,
-        dofs_idx_local=self.robot_dofs_idx[0:7],
-        envs_idx=envs_idx
-       )
+            link=link,
+            pos=pos,  # torch tensor
+            quat=quat,  # torch tensor  
+            dofs_idx_local=self.robot_dofs_idx[0:7],
+            envs_idx=envs_idx  # torch tensor
+        )
         return qpos
     
 
-    def _cal_intersection(self, ):
-        points = self.keypoints
-        cur_points = points['cur_keypoints'][:,:,:2]
-        target_points = points['target_keypoints'][:,:,:2]
+    def _cal_intersection(self) -> List[float]:
+        """计算当前和目标多边形的交集比率 (使用numpy进行几何计算)"""
+        if self.keypoints is None:
+            return []
+            
+        # numpy arrays用于几何计算
+        cur_points_np = self.keypoints['cur_keypoints'][:, :, :2]
+        target_points_np = self.keypoints['target_keypoints'][:, :, :2]
 
-        ratio = []
-        for i in range(cur_points.shape[0]):
-            cur_polygon = Polygon(cur_points[i])
-            tar_Polygon = Polygon(target_points[i])
+        ratio: List[float] = []
+        for i in range(cur_points_np.shape[0]):
+            cur_polygon = Polygon(cur_points_np[i])
+            tar_polygon = Polygon(target_points_np[i])
 
-            intersection_geom = cur_polygon.intersection(tar_Polygon)
+            intersection_geom = cur_polygon.intersection(tar_polygon)
             area = intersection_geom.area 
             ratio.append(area / cur_polygon.area)
 
         return ratio
 
-    def _get_poses(self, envs_idx:torch.Tensor):
+    def _get_poses(self, envs_idx: torch.Tensor) -> None:
+        """获取cube、target和agent的位姿
+        Args:
+            envs_idx: torch.Tensor - 环境索引 (GPU tensor for Genesis API)
+        """
 
-        # return the first env's poses(pos+ang(xyz euler))
-
-        cur_Tpose2=self.cube.get_dofs_position(self.cube_dofs_idx, envs_idx)
-        target_Tpose2 = self.plane.get_dofs_position(self.marker_dofs_idx, envs_idx)
+        # 从Genesis API获取torch tensors
+        cur_Tpose_torch = self.cube.get_dofs_position(self.cube_dofs_idx, envs_idx)
+        target_Tpose_torch = self.plane.get_dofs_position(self.marker_dofs_idx, envs_idx)
+        agent_pos_torch = self.robot.get_links_pos(self.eef_idx, envs_idx)[:, 0, :2]
+        
         self.poses = {
-            'cur_Tpose': cur_Tpose2,
-            'target_Tpose': target_Tpose2,
-            'agent_pos': self.robot.get_links_pos(self.eef_idx, envs_idx)[:, 0, :2]
+            'cur_Tpose': cur_Tpose_torch,      # torch tensor from Genesis
+            'target_Tpose': target_Tpose_torch, # torch tensor from Genesis  
+            'agent_pos': agent_pos_torch        # torch tensor from Genesis
         }
 
 
-    def _get_obs(self, rgb=True, depth=False, segmentation=False, normal=False, envs_idx=None):
+    def _get_obs(self, rgb: bool = True, depth: bool = False, 
+                 segmentation: bool = False, normal: bool = False, 
+                 envs_idx: Optional[torch.Tensor] = None) -> Dict[str, torch.Tensor]:
+        """获取观测值
+        Args:
+            envs_idx: torch.Tensor - 环境索引 (GPU tensor for Genesis API)
+        Returns:
+            Dict with torch tensors
+        """
 
         if envs_idx is None:
-            envs_idx = torch.arange(self.n_envs, device=gs.device, dtype=torch.int16)
-        else:
-            if isinstance(envs_idx, torch.Tensor) == False:
-                raise ValueError("Dtype for envs_idx is Torch Tensor!")
+            envs_idx = torch.arange(self.n_envs, device=gs.device, dtype=torch.int32)
+        elif not isinstance(envs_idx, torch.Tensor):
+            raise ValueError("envs_idx must be torch.Tensor for GPU simulation API!")
 
         # img (list:[w, h, 3],NoneType,NoneType,NoneType)
         img = self.cam.render(rgb=rgb, depth=depth, segmentation=segmentation, normal=normal) 
         self.render_cache = img
 
         # jnt_pos = [self.robot.get_dofs_position(idx, envs_idx=np.arange(self.n_envs)) for idx in self.dofs_idx]
-        agent_pos = self.robot.get_links_pos(self.eef_idx, envs_idx)
-        idx = to_numpy(envs_idx, float=False)
+        agent_pos_torch = self.robot.get_links_pos(self.eef_idx, envs_idx)  # torch tensor from Genesis
+        idx_np = to_numpy(envs_idx, float=False)  # numpy indices for array indexing
         obs = {
-            'envs_idx': envs_idx,
-            'image': to_torch(img[0][idx,:]),
-            'agent_pos': agent_pos[idx,0, :2]
+            'envs_idx': envs_idx,  # keep as torch tensor
+            'image': to_torch(img[0][idx_np, :]),  # convert numpy to torch
+            'agent_pos': agent_pos_torch[idx_np, 0, :2]  # torch tensor indexed with numpy
         }
         # marker_pos = self.plane.get_links_pos(self.marker_idx, envs_idx)     
         return obs
     
-    def _get_info(self, envs_idx = None):
+    def _get_info(self, envs_idx: Optional[torch.Tensor] = None) -> Dict[str, torch.Tensor]:
+        """获取信息字典
+        Args:
+            envs_idx: torch.Tensor - 环境索引 (GPU tensor)
+        """
         if envs_idx is None:
-            envs_idx = torch.arange(self.n_envs, device=gs.device)
-        else:
-            if isinstance(envs_idx, torch.Tensor) == False:
-                raise ValueError("Dtype for envs_idx is Torch Tensor!")
-        idx = to_numpy(envs_idx, float=False) 
+            envs_idx = torch.arange(self.n_envs, device=gs.device, dtype=torch.int32)
+        elif not isinstance(envs_idx, torch.Tensor):
+            raise ValueError("envs_idx must be torch.Tensor for GPU simulation API!")
+        idx_np = to_numpy(envs_idx, float=False)  # numpy indices for array indexing 
         info = {
-            'envs_idx': envs_idx,
-            "agent_pos": self.eef.get_pos()[idx, :2],
-            "goal_pos": self.plane.get_links_pos(self.marker_idx)[idx, :2],
+            'envs_idx': envs_idx,  # keep as torch tensor
+            "agent_pos": self.eef.get_pos()[idx_np, :2],  # torch tensor indexed with numpy
+            "goal_pos": self.plane.get_links_pos(self.marker_idx)[idx_np, :2],  # torch tensor indexed with numpy
         }
         return info
     

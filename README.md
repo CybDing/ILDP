@@ -3,7 +3,7 @@ Special thx to:
 Real Stanford: diffusion policy (# main reference for transition)
 the new genesis version for imitation learning using DP!
 
-Structure ( Expected:( )
+Structure  Expected:( )
 - env
   - flexiv_env: Providing basic settings with flexiv robotic arm(rizon 4)
 - model
@@ -33,3 +33,11 @@ Structure ( Expected:( )
 - Workspace
   - train
   - eval
+
+API functions:
+- push_t.env
+  - reset_idx, reset
+  - step
+  - start_recording, stop_recording 
+  - render(optional, get current img)
+

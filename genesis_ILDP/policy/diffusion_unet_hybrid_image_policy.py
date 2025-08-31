@@ -8,10 +8,12 @@ import torch.nn.functional as F
 from einops import rearrange, reduce
 from diffusers.schedulers.scheduling_ddpm import DDPMScheduler
 
+# Import from reference diffusion_policy for core components
 from diffusion_policy.model.common.normalizer import LinearNormalizer
-from genesis_ILDP.policy.base_image_policy import BaseImagePolicy
 from diffusion_policy.model.diffusion.conditional_unet1d import ConditionalUnet1D
 from diffusion_policy.model.diffusion.mask_generator import LowdimMaskGenerator
+# Import from genesis_ILDP for custom components
+from genesis_ILDP.policy.base_image_policy import BaseImagePolicy
 from genesis_ILDP.common.robomimic_config_util import get_robomimic_config
 from robomimic.algo import algo_factory
 from robomimic.algo.algo import PolicyAlgo

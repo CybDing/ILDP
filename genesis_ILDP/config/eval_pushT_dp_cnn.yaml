@@ -1,4 +1,13 @@
-_target_: genesis_ILDP.workspace.train_diffusion_unet_hybrid_workspace.TrainDiffusionUnetHybridWorkspace # CHECK
+# === WORKSPACE CONFIGURATION ===
+# Note: Uses training workspace for evaluation to maintain consistency
+_target_: genesis_ILDP.workspace.train_diffusion_unet_hybrid_workspace.TrainDiffusionUnetHybridWorkspace
+
+# === EVALUATION SETTINGS ===
+checkpoint_path: ./data/checkpoints/pusht/diffusion_policy_cnn/latest.ckpt
+output_dir: ./data/pusht_eval_output
+device: cuda:0
+
+# === CHECKPOINT CONFIGURATION ===
 checkpoint:
   save_last_ckpt: true
   save_last_snapshot: false
@@ -7,10 +16,7 @@ checkpoint:
     k: 5
     mode: max
     monitor_key: test_mean_score
-checkpoint_path: ./data/checkpoints/pusht/diffusion_policy_cnn/latest.ckpt
-output_dir: ./data/pusht_eval_output
-device: cuda:0
-
+# === DATA LOADING CONFIGURATION ===
 dataloader:
   batch_size: 64
   num_workers: 8
@@ -137,7 +143,7 @@ task:
     n_envs: null
     n_obs_steps: 2
     n_test: 50
-    n_test_vis: 50 # CHECK
+    n_test_vis: 50  # Number of test episodes to record videos for
     n_train: 0
     n_train_vis: 0
     past_action: false
