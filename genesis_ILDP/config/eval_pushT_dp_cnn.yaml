@@ -26,7 +26,7 @@ dataloader:
 dataset_obs_steps: 2
 
 ema:
-  _target_: diffusion_policy.model.diffusion.ema_model.EMAModel
+  _target_: genesis_ILDP.model.diffusion.ema_model.EMAModel
   inv_gamma: 1.0
   max_value: 0.9999
   min_value: 0.0
@@ -40,7 +40,7 @@ logging:
   group: null
   id: null
   mode: online
-  name: eval_pusht_dp_cnn_06_05_25
+  name: eval_pusht_dp_cnn_09_13_25
   project: diffusion_policy_cnn_pusht
   resume: true
   tags:
@@ -66,7 +66,7 @@ optimizer:
 past_action_visible: false
 
 policy:
-  _target_: genesis_ILDP.policy.diffusion_unet_hybrid_image_policy.DiffusionUnetHybridImagePolicy
+  _target_: genesis_ILDP.policy.action_diffusion_policy.ActionDiffusionPolicy
   cond_predict_scale: true
   crop_shape:
   - 84
@@ -82,15 +82,15 @@ policy:
   n_action_steps: 8
   n_groups: 8
   n_obs_steps: 2
-  noise_scheduler:
-    _target_: diffusers.schedulers.scheduling_ddpm.DDPMScheduler
-    beta_end: 0.02
-    beta_schedule: squaredcos_cap_v2
-    beta_start: 0.0001
-    clip_sample: true
-    num_train_timesteps: 100
-    prediction_type: epsilon
-    variance_type: fixed_small
+  # noise_scheduler:
+  #   _target_: diffusers.schedulers.scheduling_ddpm.DDPMScheduler
+  #   beta_end: 0.02
+  #   beta_schedule: squaredcos_cap_v2
+  #   beta_start: 0.0001
+  #   clip_sample: true
+  #   num_train_timesteps: 100
+  #   prediction_type: epsilon
+  #   variance_type: fixed_small
   num_inference_steps: 100
   obs_as_global_cond: true
   obs_encoder_group_norm: true
@@ -126,7 +126,7 @@ shape_meta:
       type: rgb
 task:
   dataset:
-    _target_: diffusion_policy.dataset.pusht_image_dataset.PushTImageDataset
+    _target_: genesis_ILDP.dataset.pusht_image_dataset.PushTImageDataset
     horizon: 16
     max_train_episodes: 90
     pad_after: 7

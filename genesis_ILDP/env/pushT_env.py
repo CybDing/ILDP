@@ -15,8 +15,8 @@ import glfw
 import requests
 import json
 
-from ..utils.cuda import *
-from ..config.env_config import *
+from genesis_ILDP.utils.cuda import *
+from genesis_ILDP.config.env_config import *
 from shapely.geometry import Polygon
 
 class PushTEnv(gym.Env):
@@ -305,7 +305,6 @@ class PushTEnv(gym.Env):
         observation = self._get_obs(rgb=True, envs_idx=envs_idx)
         return observation
     
-
     def reset(self) -> Dict[str, torch.Tensor]:
         envs_idx_torch = torch.arange(self.n_envs, device=gs.device, dtype=torch.int32)
         return self.reset_idx(envs_idx=envs_idx_torch)
@@ -483,9 +482,9 @@ class PushTEnv(gym.Env):
     def _get_obs(self, rgb: bool = True, depth: bool = False, 
                  segmentation: bool = False, normal: bool = False, 
                  envs_idx: Optional[torch.Tensor] = None) -> Dict[str, torch.Tensor]:
-        """获取观测值
+        """
         Args:
-            envs_idx: torch.Tensor - 环境索引 (GPU tensor for Genesis API)
+            envs_idx: torch.Tensor
         Returns:
             Dict with torch tensors
         """

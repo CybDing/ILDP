@@ -6,14 +6,12 @@ import requests
 from pygame.locals import *
 from flask import Flask, request, jsonify
 
-# 初始化
 pygame.init()
 width, height = 1000, 800
 screen = pygame.display.set_mode((width, height))
 clock = pygame.time.Clock()
 font = pygame.font.SysFont('Arial', 14)
 
-# 颜色定义
 WHITE = (255, 255, 255)
 RED = (255, 50, 50)
 GREEN = (50, 255, 50)
@@ -22,7 +20,7 @@ BLACK = (0, 0, 0)
 YELLOW = (255, 255, 0)
 SCALE = 800
 
-# 全局数据存储
+# 当前最新数据存储
 latest_data = {
     "cur_keypoints": [],
     "target_keypoints": [],
@@ -33,7 +31,6 @@ latest_data = {
 }
 data_lock = threading.Lock()
 
-# 频率监控
 request_stats = {
     "last_time": 0,
     "count": 0,
@@ -156,7 +153,6 @@ class SimpleEEF:
         pygame.draw.line(surface, BLUE, (x, y-10), (x, y+10), 2)
 
 def draw_mouse_cursor(surface, pos):
-    """绘制鼠标光标位置"""
     x, y = pos
     pygame.draw.circle(surface, YELLOW, (int(x), int(y)), 8, 2)
     pygame.draw.line(surface, YELLOW, (x-12, y), (x+12, y), 2)
@@ -174,7 +170,7 @@ last_update = 0
 UPDATE_INTERVAL = 0.05
 
 print("Pygame visualization started. Press ESC to quit, S for stats.")
-print("Press SPACE to start/stop sending actions at mouse position")
+print("Press SPACE to start/stop mouse manipulation!")
 
 while running:
     current_time = time.time()

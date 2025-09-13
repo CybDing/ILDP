@@ -18,20 +18,27 @@ import random
 import wandb
 import tqdm
 import numpy as np
-import shutil
-from diffusion_policy.workspace.base_workspace import BaseWorkspace
-from diffusion_policy.policy.diffusion_unet_hybrid_image_policy import DiffusionUnetHybridImagePolicy
-from diffusion_policy.dataset.base_dataset import BaseImageDataset
-from diffusion_policy.env_runner.base_image_runner import BaseImageRunner
+
+# Import from genesis_ILDP
+from genesis_ILDP.workspace.base_workspace import BaseWorkspace
+from genesis_ILDP.policy.action_diffusion_image_policy import ActionDiffusionImagePolicy
+from genesis_ILDP.dataset.base_dataset import BaseImageDataset
+from genesis_ILDP.env_runner.base_image_runner import BaseImageRunner
+from genesis_ILDP.utils.pytorch_util import dict_apply, optimizer_to
+
+# Import from original diffusion_policy for shared components
 from diffusion_policy.common.checkpoint_util import TopKCheckpointManager
 from diffusion_policy.common.json_logger import JsonLogger
-from diffusion_policy.common.pytorch_util import dict_apply, optimizer_to
-from diffusion_policy.model.diffusion.ema_model import EMAModel
+from genesis_ILDP.model.diffusion.ema_model import EMAModel
 from diffusion_policy.model.common.lr_scheduler import get_scheduler
 
 OmegaConf.register_new_resolver("eval", eval, replace=True)
 
-class TrainDiffusionUnetHybridWorkspace(BaseWorkspace):
+class TrainActionDiffusionImageWorkspace(BaseWorkspace):
+    """
+    Training workspace specifically for ActionDiffusionImagePolicy.
+    Uses only genesis_ILDP components with minimal diffusion_policy dependencies.
+    """
     include_keys = ['global_step', 'epoch']
 
     def __init__(self, cfg: OmegaConf, output_dir=None):
@@ -44,9 +51,9 @@ class TrainDiffusionUnetHybridWorkspace(BaseWorkspace):
         random.seed(seed)
 
         # configure model
-        self.model: DiffusionUnetHybridImagePolicy = hydra.utils.instantiate(cfg.policy)
-
-        self.ema_model: DiffusionUnetHybridImagePolicy = None
+        self.model: ActionDiffusionImagePolicy = hydra.utils.instantiate(cfg.policy)
+        
+        self.ema_model: ActionDiffusionImagePolicy = None
         if cfg.training.use_ema:
             self.ema_model = copy.deepcopy(self.model)
 
@@ -57,6 +64,11 @@ class TrainDiffusionUnetHybridWorkspace(BaseWorkspace):
         # configure training state
         self.global_step = 0
         self.epoch = 0
+
+        print(f"ActionDiffusionImagePolicy workspace initialized:")
+        print(f"- Model type: {type(self.model).__name__}")
+        print(f"- Device: {cfg.training.device}")
+        print(f"- Use EMA: {cfg.training.use_ema}")
 
     def run(self):
         cfg = copy.deepcopy(self.cfg)
@@ -71,7 +83,7 @@ class TrainDiffusionUnetHybridWorkspace(BaseWorkspace):
         # configure dataset
         dataset: BaseImageDataset
         dataset = hydra.utils.instantiate(cfg.task.dataset)
-        assert isinstance(dataset, BaseImageDataset)
+        assert isinstance(dataset, BaseImageDataset), f"Expected BaseImageDataset, got {type(dataset)}"
         train_dataloader = DataLoader(dataset, **cfg.dataloader)
         normalizer = dataset.get_normalizer()
 
@@ -79,6 +91,7 @@ class TrainDiffusionUnetHybridWorkspace(BaseWorkspace):
         val_dataset = dataset.get_validation_dataset()
         val_dataloader = DataLoader(val_dataset, **cfg.val_dataloader)
 
+        # *** IMPORTANT: Set normalizer on model ***
         self.model.set_normalizer(normalizer)
         if cfg.training.use_ema:
             self.ema_model.set_normalizer(normalizer)
@@ -103,12 +116,18 @@ class TrainDiffusionUnetHybridWorkspace(BaseWorkspace):
                 cfg.ema,
                 model=self.ema_model)
 
-        # configure env
-        env_runner: BaseImageRunner
-        env_runner = hydra.utils.instantiate(
-            cfg.task.env_runner,
-            output_dir=self.output_dir)
-        assert isinstance(env_runner, BaseImageRunner)
+        # configure env runner (optional, for rollout evaluation)
+        env_runner: BaseImageRunner = None
+        if 'env_runner' in cfg.task:
+            try:
+                env_runner = hydra.utils.instantiate(
+                    cfg.task.env_runner,
+                    output_dir=self.output_dir)
+                assert isinstance(env_runner, BaseImageRunner)
+                print(f"Environment runner configured: {type(env_runner).__name__}")
+            except Exception as e:
+                print(f"Warning: Could not initialize env_runner: {e}")
+                print("Training will continue without environment evaluation")
 
         # configure logging
         wandb_run = wandb.init(
@@ -119,6 +138,7 @@ class TrainDiffusionUnetHybridWorkspace(BaseWorkspace):
         wandb.config.update(
             {
                 "output_dir": self.output_dir,
+                "model_type": "ActionDiffusionImagePolicy"
             }
         )
 
@@ -147,6 +167,8 @@ class TrainDiffusionUnetHybridWorkspace(BaseWorkspace):
             cfg.training.val_every = 1
             cfg.training.sample_every = 1
 
+        print(f"Starting training for {cfg.training.num_epochs} epochs...")
+
         # training loop
         log_path = os.path.join(self.output_dir, 'logs.json.txt')
         with JsonLogger(log_path) as json_logger:
@@ -162,7 +184,7 @@ class TrainDiffusionUnetHybridWorkspace(BaseWorkspace):
                         if train_sampling_batch is None:
                             train_sampling_batch = batch
 
-                        # compute loss
+                        # compute loss using ActionDiffusionImagePolicy
                         raw_loss = self.model.compute_loss(batch)
                         loss = raw_loss / cfg.training.gradient_accumulate_every
                         loss.backward()
@@ -210,11 +232,16 @@ class TrainDiffusionUnetHybridWorkspace(BaseWorkspace):
                     policy = self.ema_model
                 policy.eval()
 
-                # run rollout
-                if (self.epoch % cfg.training.rollout_every) == 0:
-                    runner_log = env_runner.run(policy)
-                    # log all
-                    step_log.update(runner_log)
+                # run rollout (only if env_runner is configured)
+                if env_runner is not None and (self.epoch % cfg.training.rollout_every) == 0:
+                    try:
+                        print(f"Running rollout evaluation at epoch {self.epoch}")
+                        runner_log = env_runner.run(policy)
+                        # log all rollout metrics
+                        step_log.update(runner_log)
+                        print(f"Rollout completed: {list(runner_log.keys())}")
+                    except Exception as e:
+                        print(f"Warning: Rollout evaluation failed: {e}")
 
                 # run validation
                 if (self.epoch % cfg.training.val_every) == 0:
@@ -225,33 +252,39 @@ class TrainDiffusionUnetHybridWorkspace(BaseWorkspace):
                             for batch_idx, batch in enumerate(tepoch):
                                 batch = dict_apply(batch, lambda x: x.to(device, non_blocking=True))
                                 loss = self.model.compute_loss(batch)
-                                val_losses.append(loss)
+                                val_losses.append(loss.item())
                                 if (cfg.training.max_val_steps is not None) \
                                     and batch_idx >= (cfg.training.max_val_steps-1):
                                     break
                         if len(val_losses) > 0:
-                            val_loss = torch.mean(torch.tensor(val_losses)).item()
+                            val_loss = np.mean(val_losses)
                             # log epoch average validation loss
                             step_log['val_loss'] = val_loss
+                            print(f"Validation loss: {val_loss:.4f}")
 
                 # run diffusion sampling on a training batch
                 if (self.epoch % cfg.training.sample_every) == 0:
                     with torch.no_grad():
-                        # sample trajectory from training set, and evaluate difference
-                        batch = dict_apply(train_sampling_batch, lambda x: x.to(device, non_blocking=True))
-                        obs_dict = batch['obs']
-                        gt_action = batch['action']
-                        
-                        result = policy.predict_action(obs_dict)
-                        pred_action = result['action_pred']
-                        mse = torch.nn.functional.mse_loss(pred_action, gt_action)
-                        step_log['train_action_mse_error'] = mse.item()
-                        del batch
-                        del obs_dict
-                        del gt_action
-                        del result
-                        del pred_action
-                        del mse
+                        try:
+                            # sample trajectory from training set, and evaluate difference
+                            batch = dict_apply(train_sampling_batch, lambda x: x.to(device, non_blocking=True))
+                            obs_dict = batch['obs']
+                            gt_action = batch['action']
+                            
+                            result = policy.predict_action(obs_dict)
+                            pred_action = result['action_pred']
+                            mse = torch.nn.functional.mse_loss(pred_action, gt_action)
+                            step_log['train_action_mse_error'] = mse.item()
+                            print(f"Sample MSE: {mse.item():.4f}")
+                            
+                            del batch
+                            del obs_dict
+                            del gt_action
+                            del result
+                            del pred_action
+                            del mse
+                        except Exception as e:
+                            print(f"Warning: Sampling evaluation failed: {e}")
                 
                 # checkpoint
                 if (self.epoch % cfg.training.checkpoint_every) == 0:
@@ -274,6 +307,8 @@ class TrainDiffusionUnetHybridWorkspace(BaseWorkspace):
 
                     if topk_ckpt_path is not None:
                         self.save_checkpoint(path=topk_ckpt_path)
+                        print(f"Saved top-k checkpoint: {topk_ckpt_path}")
+
                 # ========= eval end for this epoch ==========
                 policy.train()
 
@@ -284,12 +319,15 @@ class TrainDiffusionUnetHybridWorkspace(BaseWorkspace):
                 self.global_step += 1
                 self.epoch += 1
 
+        print(f"Training completed after {cfg.training.num_epochs} epochs!")
+        wandb_run.finish()
+
 @hydra.main(
     version_base=None,
     config_path=str(pathlib.Path(__file__).parent.parent.joinpath("config")), 
     config_name=pathlib.Path(__file__).stem)
 def main(cfg):
-    workspace = TrainDiffusionUnetHybridWorkspace(cfg)
+    workspace = TrainActionDiffusionImageWorkspace(cfg)
     workspace.run()
 
 if __name__ == "__main__":

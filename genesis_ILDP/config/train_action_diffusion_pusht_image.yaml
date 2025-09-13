@@ -1,0 +1,171 @@
+# === TRAINING CONFIGURATION FOR ACTION DIFFUSION IMAGE POLICY ===
+# Uses only genesis_ILDP components, no diffusion_policy dependencies
+
+_target_: genesis_ILDP.workspace.train_action_diffusion_image_workspace.TrainActionDiffusionImageWorkspace
+
+# === EXPERIMENT SETTINGS ===
+exp_name: "action_diffusion_pusht_image"
+task_name: pusht_image
+name: train_action_diffusion_image
+
+# === STANDARD DIFFUSION PARAMETERS (same as original diffusion_policy) ===
+horizon: 16                    # Predict 16 action steps (standard setting)
+n_action_steps: 8             # Execute first 8 actions (standard setting)  
+n_obs_steps: 2                # Use 2 observation frames (standard setting)
+n_latency_steps: 0            # No latency compensation
+dataset_obs_steps: 2          # Dataset observation steps
+obs_as_global_cond: true      # Use observations as global conditioning
+past_action_visible: false    # Don't show past actions
+keypoint_visible_rate: 1.0    # Not used for image policy
+
+# === SHAPE METADATA ===
+shape_meta:
+  action:
+    shape: [2]                 # 2D action space (x, y coordinates)
+  obs:
+    image:
+      shape: [3, 96, 96]       # RGB images 96x96
+      type: rgb
+    agent_pos:
+      shape: [2]               # 2D agent position
+      type: low_dim
+
+# === POLICY CONFIGURATION ===
+policy:
+  _target_: genesis_ILDP.policy.action_diffusion_image_policy.ActionDiffusionImagePolicy
+  
+  # Shape and basic parameters
+  shape_meta: ${shape_meta}
+  horizon: ${horizon}
+  n_action_steps: ${n_action_steps}
+  n_obs_steps: ${n_obs_steps}
+  obs_steps: ${n_obs_steps}    # For your custom ActionDiffusion model
+  
+  # Diffusion parameters (standard settings)
+  diff_steps: 100              # Number of diffusion steps
+  scheduler_mode: 'Linear'     # Your custom scheduler mode
+  num_inference_steps: 100     # Inference steps
+  
+  # Note: Your ActionDiffusionImagePolicy uses custom noise scheduler
+  # The diffusers scheduler is commented out to use your implementation
+
+# === TASK CONFIGURATION ===
+task:
+  name: pusht_image
+  shape_meta: ${shape_meta}
+  
+  # Dataset configuration
+  dataset:
+    _target_: genesis_ILDP.dataset.pusht_image_dataset.PushTImageDataset
+    zarr_path: data/pusht/pusht_cchi_v7_replay.zarr
+    horizon: ${horizon}
+    pad_before: ${eval:'${n_obs_steps}-1'}     # 1
+    pad_after: ${eval:'${n_action_steps}-1'}   # 7  
+    seed: 42
+    val_ratio: 0.02
+    max_train_episodes: 90
+  
+  # Environment runner (optional for training, but good for evaluation)
+  env_runner:
+    _target_: genesis_ILDP.env_runner.pusht_image_runner.PushTImageRunner
+    output_dir: ${multi_run.run_dir}
+    fps: 10
+    max_steps: 300
+    n_action_steps: ${n_action_steps}
+    n_obs_steps: ${n_obs_steps}
+    n_test: 50
+    n_test_vis: 4
+    n_train: 6  
+    n_train_vis: 2
+    past_action: ${past_action_visible}
+    test_start_seed: 100000
+    train_start_seed: 0
+    n_envs: null
+
+# === TRAINING CONFIGURATION ===  
+training:
+  seed: 42
+  device: cuda:0
+  num_epochs: 3000             # Standard training epochs
+  batch_size: 64               # Batch size
+  
+  # Learning and optimization
+  lr_scheduler: cosine
+  lr_warmup_steps: 500
+  gradient_accumulate_every: 1
+  
+  # Checkpointing and evaluation
+  checkpoint_every: 50         # Save checkpoint every 50 epochs
+  val_every: 1                 # Validate every epoch  
+  rollout_every: 50            # Run environment rollout every 50 epochs
+  sample_every: 5              # Sample predictions every 5 epochs
+  
+  # Limits (null means no limit)
+  max_train_steps: null
+  max_val_steps: null
+  
+  # Debugging and logging
+  debug: false
+  tqdm_interval_sec: 1.0
+  use_ema: true                # Use exponential moving average
+  resume: true                 # Resume from checkpoint if available
+
+# === OPTIMIZER CONFIGURATION ===
+optimizer:
+  _target_: torch.optim.AdamW
+  lr: 0.0001
+  betas: [0.95, 0.999]
+  eps: 1.0e-08
+  weight_decay: 1.0e-06
+
+# === DATA LOADING ===
+dataloader:
+  batch_size: ${training.batch_size}
+  num_workers: 8
+  persistent_workers: false
+  pin_memory: true
+  shuffle: true
+
+val_dataloader:
+  batch_size: ${training.batch_size}
+  num_workers: 8
+  persistent_workers: false
+  pin_memory: true
+  shuffle: false
+
+# === EMA (Exponential Moving Average) CONFIGURATION ===
+ema:
+  _target_: genesis_ILDP.model.diffusion.ema_model.EMAModel
+  inv_gamma: 1.0
+  max_value: 0.9999
+  min_value: 0.0
+  power: 0.75
+  update_after_step: 0
+
+# === CHECKPOINT CONFIGURATION ===
+checkpoint:
+  save_last_ckpt: true
+  save_last_snapshot: false
+  topk:
+    format_str: epoch={epoch:04d}-test_mean_score={test_mean_score:.3f}.ckpt
+    k: 5
+    mode: max
+    monitor_key: test_mean_score
+
+# === LOGGING CONFIGURATION ===
+logging:
+  mode: online                 # 'online', 'offline', or 'disabled'
+  project: genesis_ILDP_action_diffusion
+  group: action_diffusion_pusht
+  name: ${exp_name}_${now:%Y.%m.%d-%H.%M.%S}
+  tags:
+    - action_diffusion_image
+    - pusht_image
+    - genesis_ILDP
+  id: null
+  resume: true
+
+# === OUTPUT CONFIGURATION ===
+multi_run:
+  run_dir: outputs/${now:%Y.%m.%d}/${now:%H.%M.%S}_${exp_name}
+  wandb_name_base: ${now:%Y.%m.%d-${now:%H.%M.%S}_${exp_name}

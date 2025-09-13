@@ -33,7 +33,7 @@ class PushTImageRunner(BaseImageRunner):
                  n_train_vis = 0,
                  n_test = 50, # Using test seed
                  n_test_vis = 50,
-                 n_obs_steps = 8,
+                 n_obs_steps = 2,
                  n_action_steps = 8,
                  max_steps=200,
                  image_shape=(96, 96),
@@ -45,15 +45,21 @@ class PushTImageRunner(BaseImageRunner):
                  train_start_seed = 0,
                  test_start_seed = 100000, 
                  # does not reach 100000 episodes
-                 enable_render = True
+                 enable_render = True,
+                 max_envs_running = 3,
                  ):
         super().__init__(output_dir)
         if n_envs is None:
             self.n_envs = n_train + n_test
-        else: raise NotImplementedError('n_envs None Not implemented!')
+            print(f"Using computed n_envs: {self.n_envs} (train: {n_train}, test: {n_test})")
+        else:
+            self.n_envs = n_envs
+            print(f"Using provided n_envs: {self.n_envs}")
 
         steps_per_render = 1 # double check!
-
+        
+        # set the max_envs for parallel envs running together inside the genesis engine for less gpu memory
+        self.parallel_envs_counts = min(max_envs_running, self.n_envs) 
         self.env = MultiStepWrapper(
                     PushTEnv(
                         render_size=image_shape,
@@ -63,7 +69,7 @@ class PushTImageRunner(BaseImageRunner):
                 n_obs_steps=n_obs_steps,
                 n_action_steps=n_action_steps,
                 max_episode_steps=max_steps,
-                n_envs = self.n_envs
+                n_envs = self.parallel_envs_counts
             )
         self.n_train = n_train
         self.n_test = n_test
@@ -71,7 +77,7 @@ class PushTImageRunner(BaseImageRunner):
         self.n_test_vis = min(self.n_test, n_test_vis)
         self.n_obs_steps = n_obs_steps
         self.n_action_steps = n_action_steps
-        # self.device = gs.device
+        self.device = 'cuda' if torch.cuda.is_available() else 'cpu'
         self.max_steps = max_steps
         self.past_action = past_action
         self.seed_train = train_start_seed
@@ -86,64 +92,84 @@ class PushTImageRunner(BaseImageRunner):
         self._setup_envs()
 
         self.episode_obs = None
-        self.episode_reward = [[] for _ in range(self.env.n_envs)]
+        self.episode_reward = [[] for _ in range(self.n_envs)]
         self.episode_info = dict()
-        self.max_reward = [None for _ in range(self.env.n_envs)]
+        self.max_reward = [None for _ in range(self.n_envs)]
 
     def run(self, policy):
+        """Run evaluation with the given policy and return logging data."""
         
         self._prepare_env()
-        obs = self.env.reset()
+        obs = self.env.reset() # return (parallel_envs_counts, obs_dict)
         past_action = None
-        # policy.reset() # reset states for stateful policy
+        policy.reset()  # Reset states for stateful policy
         done = False
 
-        pbar = tqdm.tqdm(total=self.max_steps, desc=f"Eval PushTImageRunner",
+        pbar = tqdm.tqdm(total=self.max_steps * self.n_envs, desc=f"Eval PushTImageRunner",
                              leave=False, mininterval=self.tqdm_interval_sec)
         
-        if self.enable_render: self.env.start_recording()
-        while not done: # Run for one epoch
-
-            ## TODO clear out "envs_idx" 
-            obs_dict = dict(obs)
-
-            # Not implemented yet! TODO Change past_action
-            if self.past_action and (past_action is not None):
-                obs_dict['past_action'] = past_action[
-                                        :, -(self.n_obs_steps - 1):
-                                        ].astype(np.float32)
-
-            if 'envs_idx' in obs_dict:
-                del obs_dict['envs_idx']
-
-            with torch.no_grad():
-                action = policy.predict_action(obs_dict)
-
-            # action = action_dict['action']
-
-            obs, reward, done, info, env_status = self.env.step(action)
-            print(f"Step: done={done}, env_status={env_status}, active_envs={len([i for i in range(len(env_status)) if env_status[i] == 2])}")
-            # TODO add past action into process_info
-            past_action = action
-            
-            obs = self._process_info(obs, reward, info, env_status)
-
-            pbar.update(action.shape[1])
-        pbar.close()
-
         if self.enable_render: 
-            self.env.stop_recording(self.base_generate_path)
-            self._process_generated_videos()
-            self._cleanup_temp_files()
+            self.env.start_recording()
 
+        envs_remained = self.n_envs
+            
+        try:
+            while not done:
+                obs_dict = dict(obs)
+                
+                if 'envs_idx' in obs_dict:
+                    del obs_dict['envs_idx']
+
+                # Add past action if enabled, and note that the past action is counted according to the n_obs_steps number
+                # if n_obs_steps is larger than 2, say 3, than the past action should only terminate at one step before the full execution
+                # since it start planning earlier ? 
+                if self.past_action and (past_action is not None):
+                    obs_dict['past_action'] = past_action[
+                                            :, -(self.n_obs_steps - 1):
+                                            ].astype(np.float32)
+
+                with torch.no_grad():
+                    action_dict = policy.predict_action(obs_dict)
+                    
+                if isinstance(action_dict, dict):
+                    action = action_dict['action']
+                else:
+                    action = action_dict
+
+                obs, reward, done, info, env_status = self.env.step(action)
+                
+                past_action = action
+                
+                obs = self._process_info(obs, reward, info, env_status)
+
+                pbar.update(1)  # Update by 1 step since all envs run together
+                
+        except Exception as e:
+            print(f"Error during policy execution: {e}")
+            raise e
+        finally:
+            pbar.close()
+
+        # Handle video recording cleanup
+        if self.enable_render: 
+            try:
+                self.env.stop_recording(self.base_generate_path)
+                self._process_generated_videos()
+                self._cleanup_temp_files()
+            except Exception as e:
+                print(f"Warning: Video processing failed: {e}")
+
+        # Update seeds for next run
         self.seed_train = self.seed_train + self.n_train
         self.seed_test = self.seed_test + self.n_test
 
-        self._create_log_data()
+        # Create and return logging data
+        log_data = self._create_log_data()
+        return log_data
 
     def _setup_envs(self,):
 
-        self.env.start(n_envs=self.n_envs, env_separate=True)
+        self.env.start(n_envs=self.n_envs, env_separate=False)
         print(f"------SETUP COMPLETE!------\
               \n Configuration:  n_test={self.n_test},  n_train={self.n_train}, \
               n_envs={self.n_envs}\n max_steps={self.max_steps}")
@@ -180,9 +206,9 @@ class PushTImageRunner(BaseImageRunner):
 
             self.info = None
             self.episode_obs = None
-            self.episode_reward = [[] for _ in range(self.env.n_envs)]
+            self.episode_reward = [[] for _ in range(self.n_envs)]
             self.episode_info = dict()
-            self.max_reward = [None for _ in range(self.env.n_envs)]
+            self.max_reward = [None for _ in range(self.n_envs)]
 
 
     def _process_generated_videos(self):
@@ -280,7 +306,8 @@ class PushTImageRunner(BaseImageRunner):
         return new_obs
 
 
-    def _create_log_data(self, ):
+    def _create_log_data(self):
+        """Create logging data from collected episode information."""
         max_rewards = collections.defaultdict(list)
         log_data = dict()
     
@@ -293,25 +320,39 @@ class PushTImageRunner(BaseImageRunner):
                 prefix = 'test/'
                 test_idx = i - self.n_train
                 should_upload_video = test_idx < self.n_test_vis
-                
-            max_reward = np.max(np.array(self.episode_reward[i]))
+            
+            # Calculate max reward for this episode    
+            if len(self.episode_reward[i]) > 0:
+                max_reward = np.max(np.array(self.episode_reward[i]))
+            else:
+                max_reward = 0.0
+                print(f"Warning: No rewards collected for env {i}")
             
             max_rewards[prefix].append(max_reward)
             log_data[prefix + f'sim_max_reward_{seed}'] = max_reward
     
+            # Add video logs if available
             if should_upload_video and self.file_path is not None and i < len(self.file_path):
                 video_path = self.file_path[i]
                 if Path(video_path).exists(): 
-                    sim_video = wandb.Video(video_path)
-                    log_data[prefix + f'sim_video_{seed}'] = sim_video
-                    print(f"Uploading video: {prefix}sim_video_{seed} from {video_path}")
+                    try:
+                        sim_video = wandb.Video(video_path)
+                        log_data[prefix + f'sim_video_{seed}'] = sim_video
+                        print(f"Added video log: {prefix}sim_video_{seed} from {video_path}")
+                    except Exception as e:
+                        print(f"Warning: Failed to create video log for {video_path}: {e}")
                 else:
                     print(f"Warning: Video file not found: {video_path}")
     
-        for prefix, value in max_rewards.items():
-            name = prefix + 'mean_score'
-            value = np.mean(value)
-            log_data[name] = value
+        # Calculate mean scores
+        for prefix, rewards in max_rewards.items():
+            if len(rewards) > 0:
+                mean_score = np.mean(rewards)
+                log_data[prefix + 'mean_score'] = mean_score
+                print(f"Mean score for {prefix}: {mean_score:.3f}")
+            else:
+                log_data[prefix + 'mean_score'] = 0.0
+                print(f"Warning: No rewards for {prefix}")
     
         return log_data
 

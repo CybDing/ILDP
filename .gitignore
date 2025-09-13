@@ -56,4 +56,5 @@ backup/
 /.hydra
 /outputs
 
-
+.DS_Store
+test* 

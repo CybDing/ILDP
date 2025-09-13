@@ -41,244 +41,275 @@ class MultiStepWrapper(gym.Wrapper):
         self.active_envs = list(range(n_envs))  
     
     def reset(self):
-        
+        """Reset all environments and buffers."""
         obs = super().reset()
         self._reset_buffers()
         
-        # 为每个环境添加初始观察
+        # Process all environment observations in batch
         for env_idx in range(self.n_envs):
-            env_obs = self._extract_env_obs(obs, env_idx)
+            env_obs = self._extract_env_data(obs, env_idx)
             self.obs[env_idx].append(env_obs)
         
         return self._get_obs(self.n_obs_steps)
     
     def _reset_buffers(self):
+        """Reset all buffers efficiently."""
         for env_idx in range(self.n_envs):
             self.obs[env_idx].clear()
             self.current_step_rewards[env_idx].clear()
-            self.info[env_idx].clear()  # 简单清空字典
-            self.step_counts[env_idx] = 0
+            self.info[env_idx].clear()
         
+        # Reset counters in batch
+        self.step_counts = [0] * self.n_envs
         self.active_envs = list(range(self.n_envs))
     
-    def _extract_env_obs(self, obs, array_idx):
-        """确保提取的观察保持原始tensor格式"""
-        if isinstance(obs, dict):
-            env_obs = {}
-            for key, value in obs.items():
-                if isinstance(value, (np.ndarray, torch.Tensor)):
-                    extracted = value[array_idx]
-                    # 🔑 保持torch tensor格式，不转换
-                    env_obs[key] = extracted
-                else:
-                    env_obs[key] = value
-            return env_obs
-        else:
-            raise ValueError("Obs should be dict type!")
-        
-    def _extract_env_info(self, info, array_idx):
-        """从返回的info数组中提取指定索引的info"""
-        if isinstance(info, dict):
-            env_info = {}
-            for key, value in info.items():
-                if isinstance(value, (np.ndarray, torch.Tensor, list)):
-                    try:
-                        env_info[key] = value[array_idx]
-                    except (IndexError, TypeError):
-                        env_info[key] = value
-                else:
-                    env_info[key] = value
-            return env_info
-        else:
-            return info
+    def _extract_env_data(self, data, array_idx):
+        """Extract data for specific environment index, with proper bounds checking."""
+        if not isinstance(data, dict):
+            return data
+            
+        extracted = {}
+        for key, value in data.items():
+            if isinstance(value, (np.ndarray, torch.Tensor, list)):
+                try:
+                    if array_idx >= len(value):
+                        raise IndexError(f"Environment index {array_idx} out of bounds for key '{key}' with length {len(value)}")
+                    extracted[key] = value[array_idx]
+                except (IndexError, TypeError) as e:
+                    raise ValueError(f"Failed to extract environment {array_idx} data for key '{key}': {e}")
+            else:
+                # Scalar values are shared across environments
+                extracted[key] = value
+        return extracted
 
     def step(self, action):
-        """执行多步动作"""
+        """Execute multi-step actions efficiently."""
         
-        # Action 检查
-        if isinstance(action, (np.ndarray, torch.Tensor)):
-            if len(action.shape) != 3:
-                raise ValueError(f"Action dim should be 3D: (n_active_envs, n_action_steps, action_dim)")
-        else:
-            raise ValueError("Action should be numpy array or torch tensor")
+        # Validate action format once
+        self._validate_action(action)
         
-        # 检查 action batch size
-        if action.shape[0] != len(self.active_envs): 
-            raise ValueError(f'Action batch_size ({action.shape[0]}) != active_envs ({len(self.active_envs)})')
-        
+        # Clear rewards for all active environments in one operation
         for env_idx in self.active_envs:
             self.current_step_rewards[env_idx].clear()
         
         done_list = []
         
-        # 执行 n_action_steps 步
+        # Pre-convert active_envs to tensor (avoid repeated conversion)
+        active_envs_tensor = to_torch(np.array(self.active_envs))
+        
+        # Determine data types once
+        reward_is_array = None
+        done_is_array = None
+        
+        # Execute n_action_steps
         for step_idx in range(self.n_action_steps):
-            current_action = action[:, step_idx, :]  # (n_active_envs, action_dim)
+            current_action = action[:, step_idx, :]
             
-            # 传递活跃环境的 tensor
-            active_envs_tensor = to_torch(np.array(self.active_envs))
-            observation, reward, done, info = self.env.step(action=current_action, 
-                                                           envs_idx=active_envs_tensor)
+            observation, reward, done, info = self.env.step(
+                action=current_action, envs_idx=active_envs_tensor)
             
+            # Determine array types on first iteration only
+            if step_idx == 0:
+                reward_is_array = isinstance(reward, (list, np.ndarray, torch.Tensor))
+                done_is_array = isinstance(done, (list, np.ndarray, torch.Tensor))
+            
+            # Process all environments in batch
             for i, env_idx in enumerate(self.active_envs):
+                # Extract data using unified function
+                env_obs = self._extract_env_data(observation, i)
+                env_reward = reward[i] if reward_is_array else reward
+                env_done = done[i] if done_is_array else done
+                env_info = self._extract_env_data(info, i)
                 
-                env_obs = self._extract_env_obs(observation, i)
-                env_reward = reward[i] if isinstance(reward, (list, np.ndarray, torch.Tensor)) else reward
-                env_done = done[i] if isinstance(done, (list, np.ndarray, torch.Tensor)) else done
-                env_info = self._extract_env_info(info, i)
-                
+                # Update environment state
                 self.obs[env_idx].append(env_obs)
                 self.current_step_rewards[env_idx].append(env_reward)
+                self.info[env_idx] = env_info
                 
-                self.info[env_idx] = env_info  # 🔑 简化：直接覆盖最新的 info
-                
+                # Check termination conditions
                 self.step_counts[env_idx] += 1
-                if (self.max_episode_steps is not None) and \
-                   (self.step_counts[env_idx] >= self.max_episode_steps):
+                if (self.max_episode_steps is not None and 
+                    self.step_counts[env_idx] >= self.max_episode_steps):
                     env_done = True
                 
+                # Track done environments (avoid duplicates)
                 if env_done and env_idx not in done_list:
                     done_list.append(env_idx)
         
-        
+        # Aggregate results efficiently
         observation = self._get_obs(self.n_obs_steps)
         reward = self._aggregate_current_rewards()
         info = self._aggregate_current_info()
-
-        env_status = [0 for _ in range(self.env.n_envs)]
-
-        # CHECK
-        for idx in self.active_envs:
-            if idx in done_list: 
-                env_status[idx] = 1
-            else:
-                env_status[idx] = 2
         
-        for idx in done_list:
-            if idx in self.active_envs:
-                self.active_envs.remove(idx)
-
-        done = self._aggregate_done()
-
+        # Create env_status array efficiently
+        env_status = self._create_env_status(done_list)
+        
+        # Remove terminated environments from active list
+        self.active_envs = [idx for idx in self.active_envs if idx not in done_list]
+        
+        done = len(self.active_envs) == 0
+        
         return observation, reward, done, info, env_status
     
     def _aggregate_current_rewards(self):
-        """聚合当前步骤的奖励"""
+        """Aggregate rewards with proper error handling."""
         aggregated_rewards = []
         for env_idx in range(self.n_envs):
-            if len(self.current_step_rewards[env_idx]) > 0:
-                env_reward = aggregate(self.current_step_rewards[env_idx], self.reward_agg_method)
+            env_rewards = self.current_step_rewards[env_idx]
+            if env_rewards:
+                try:
+                    reward = aggregate(env_rewards, self.reward_agg_method)
+                    aggregated_rewards.append(reward)
+                except ValueError as e:
+                    raise RuntimeError(f"Failed to aggregate rewards for environment {env_idx}: {e}")
             else:
-                env_reward = 0.0
-            aggregated_rewards.append(env_reward)
+                # Empty reward list indicates no steps were executed for this env
+                # This should only happen for inactive environments
+                if env_idx in self.active_envs:
+                    raise RuntimeError(f"Active environment {env_idx} has no reward data")
+                aggregated_rewards.append(0.0)
+        
         return np.array(aggregated_rewards)
     
-    def _aggregate_done(self):
-        """检查是否所有环境都完成"""
-        return len(self.active_envs) == 0
+    def _validate_action(self, action):
+        """Validate action format once."""
+        if not isinstance(action, (np.ndarray, torch.Tensor)):
+            raise ValueError("Action should be numpy array or torch tensor")
+        if len(action.shape) != 3:
+            raise ValueError(f"Action dim should be 3D: (n_active_envs, n_action_steps, action_dim)")
+        if action.shape[0] != len(self.active_envs):
+            raise ValueError(f'Action batch_size ({action.shape[0]}) != active_envs ({len(self.active_envs)})')
+    
+    def _create_env_status(self, done_list):
+        """Create environment status array efficiently."""
+        env_status = [0] * self.env.n_envs  # More efficient than list comprehension
+        
+        # Set active environments to status 2
+        for idx in self.active_envs:
+            env_status[idx] = 2
+        
+        # Set terminated environments to status 1
+        for idx in done_list:
+            env_status[idx] = 1
+            
+        return env_status
     
     def _aggregate_current_info(self):
-        """简化的 info 聚合：直接返回最新的 info"""
-        aggregated_info = {}
-        
+        """Aggregate info from all environments efficiently."""
+        if not any(self.info):  # Early exit if no info
+            return {}
+            
+        # Collect all keys efficiently
         all_keys = set()
-        for env_idx in range(self.n_envs):
-            all_keys.update(self.info[env_idx].keys())
+        for info_dict in self.info:
+            all_keys.update(info_dict.keys())
         
-        for key in all_keys:
-            values = []
-            for env_idx in range(self.n_envs):
-                if key in self.info[env_idx]:
-                    values.append(self.info[env_idx][key])
-                else:
-                    values.append(None)
-            aggregated_info[key] = values
+        # Build aggregated info with list comprehension
+        aggregated_info = {
+            key: [self.info[env_idx].get(key, None) for env_idx in range(self.n_envs)]
+            for key in all_keys
+        }
         
         return aggregated_info
 
     def _get_obs(self, n_steps=1):
+        """Get stacked observations efficiently."""
         if self.n_envs == 0 or not all(len(obs_deque) > 0 for obs_deque in self.obs):
-            raise RuntimeError("没有可用的观察数据")
+            raise RuntimeError("No observation data available")
         
-        sample_obs = list(self.obs[0])[-1]
+        # Get sample observation using direct deque access (no list conversion)
+        sample_obs = self.obs[0][-1]
         
-        if isinstance(sample_obs, dict):
-            result = {}
-            for key in sample_obs.keys():
-                env_observations = []
-                for env_idx in range(self.n_envs):
-                    key_obs_history = [obs[key] for obs in self.obs[env_idx]]
-                    stacked_obs = stack_last_n_obs(key_obs_history, n_steps)
-                    env_observations.append(stacked_obs)
-                
-                if isinstance(env_observations[0], torch.Tensor):
-                    result[key] = torch.stack(env_observations, dim=0)
-                else:
-                    result[key] = np.stack(env_observations, axis=0)
-            
-            return result
-        else:
+        if not isinstance(sample_obs, dict):
             raise TypeError("Observation Space should be dict type!")
+        
+        result = {}
+        
+        # Process each observation key
+        for key in sample_obs.keys():
+            # Pre-allocate list for better performance
+            env_observations = []
+            
+            # Extract observations for all environments
+            for env_idx in range(self.n_envs):
+                # Direct deque access instead of list comprehension
+                key_obs_history = [obs[key] for obs in self.obs[env_idx]]
+                stacked_obs = stack_last_n_obs(key_obs_history, n_steps)
+                env_observations.append(stacked_obs)
+            
+            # Stack observations (type determined once per key)
+            if isinstance(env_observations[0], torch.Tensor):
+                result[key] = torch.stack(env_observations, dim=0)
+            else:
+                result[key] = np.stack(env_observations, axis=0)
+        
+        return result
 
-def stack_repeated(x, n):
-    return np.repeat(np.expand_dims(x,axis=0),n,axis=0)
-
-def repeated_box(box_space, n):
-    return spaces.Box(
-        low=stack_repeated(box_space.low, n),
-        high=stack_repeated(box_space.high, n),
-        shape=(n,) + box_space.shape,
-        dtype=box_space.dtype
-    )
-
+# Utility functions for space creation
 def repeated_space(space, n):
+    """Create repeated gym space for multi-step actions/observations."""
     if isinstance(space, spaces.Box):
-        return repeated_box(space, n)
+        return spaces.Box(
+            low=np.repeat(np.expand_dims(space.low, axis=0), n, axis=0),
+            high=np.repeat(np.expand_dims(space.high, axis=0), n, axis=0),
+            shape=(n,) + space.shape,
+            dtype=space.dtype
+        )
     elif isinstance(space, spaces.Dict):
-        result_space = spaces.Dict()
-        for key, value in space.items():
-            result_space[key] = repeated_space(value, n)
-        return result_space
+        return spaces.Dict({
+            key: repeated_space(value, n) 
+            for key, value in space.items()
+        })
     else:
         raise RuntimeError(f'Unsupported space type {type(space)}')
 
 def aggregate(data, method='max'):
-    if method == 'max':
-        return np.max(data)
-    elif method == 'min':
-        return np.min(data)
-    elif method == 'mean':
-        return np.mean(data)
-    elif method == 'sum':
-        return np.sum(data)
-    else:
-        raise NotImplementedError()
+    """Aggregate reward data using specified method."""
+    if not data:
+        raise ValueError(f"Cannot aggregate empty data with method '{method}'")
+        
+    # Use dict for cleaner lookup
+    aggregation_methods = {
+        'max': np.max,
+        'min': np.min, 
+        'mean': np.mean,
+        'sum': np.sum
+    }
+    
+    if method not in aggregation_methods:
+        raise ValueError(f"Unsupported aggregation method: {method}. Choose from {list(aggregation_methods.keys())}")
+    
+    try:
+        return float(aggregation_methods[method](data))
+    except Exception as e:
+        raise ValueError(f"Failed to aggregate data with method '{method}': {e}")
 
 def stack_last_n_obs(all_obs, n_steps):
-
-    assert(len(all_obs) > 0)
-    all_obs = list(all_obs)
+    """Stack last n observations, duplicating if insufficient history."""
+    assert len(all_obs) > 0, "No observations available for stacking"
+    
+    # Convert to list only if necessary
+    if not isinstance(all_obs, list):
+        all_obs = list(all_obs)
+        
     sample_obs = all_obs[-1]
+    n_available = len(all_obs)
+    start_idx = -min(n_steps, n_available)
     
     if isinstance(sample_obs, torch.Tensor):
-
         result = torch.zeros((n_steps,) + sample_obs.shape, 
-                           dtype=sample_obs.dtype, 
-                           device=sample_obs.device)
+                           dtype=sample_obs.dtype, device=sample_obs.device)
         
-        start_idx = -min(n_steps, len(all_obs))
+        # Fill with available observations
         result[start_idx:] = torch.stack(all_obs[start_idx:], dim=0)
         
-        if n_steps > len(all_obs):
+        # Duplicate first available observation to fill missing history
+        if n_steps > n_available:
             result[:start_idx] = result[start_idx]
-        
-        return result
     else:
-        # numpy array处理
-        result = np.zeros((n_steps,) + sample_obs.shape, 
-                         dtype=sample_obs.dtype)
-        start_idx = -min(n_steps, len(all_obs))
+        result = np.zeros((n_steps,) + sample_obs.shape, dtype=sample_obs.dtype)
         result[start_idx:] = np.array(all_obs[start_idx:])
-        if n_steps > len(all_obs):
+        if n_steps > n_available:
             result[:start_idx] = result[start_idx]
-        return result
+            
+    return result
