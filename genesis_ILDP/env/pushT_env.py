@@ -34,8 +34,8 @@ class PushTEnv(gym.Env):
                  ):
 
         self.render_size = render_size
-        self.sim_hz = 100
-        self.control_hz = 10 # how long waiting for robotic arms to finsih exectuing an action
+        self.sim_hz = 100.0 # TODO check what does this sim_hz control here 
+        self.control_hz = 10.0 # how long waiting for robotic arms to finsih exectuing an action
         self.is_init = False
         self._seed = seed
         self.scene = None
@@ -232,7 +232,7 @@ class PushTEnv(gym.Env):
             
             block_x = rng.random() * self.block_lim['xlim'] + 0.2
             block_y = rng.random() * self.block_lim['ylim'] + 0.2
-            block_z = 0.05  # Fixed Height
+            block_z = 0.07  # Fixed Height
             
             block_angle = rng.random() * np.pi / 2
             
@@ -247,29 +247,44 @@ class PushTEnv(gym.Env):
             block_angles.append(block_angle)
             target_angles.append(target_angle)
     
-        # numpy arrays for computation
-        block_pos_np = np.array(block_positions, dtype=np.float32)
-        target_pos_np = np.array(target_positions, dtype=np.float32)
-        block_angle_np = np.array(block_angles, dtype=np.float32).reshape(-1, 1)
-        target_angle_np = np.array(target_angles, dtype=np.float32).reshape(-1, 1)
+        block_pos = to_torch(np.array(block_positions, dtype=np.float32))
+        target_pos = to_torch(np.array(target_positions, dtype=np.float32))
+        block_angle = to_torch(np.array(block_angles, dtype=np.float32).reshape(-1, 1))
+        target_angle = to_torch(np.array(target_angles, dtype=np.float32).reshape(-1, 1))
+        
+        # save initial dis and ang for reward calculation baseline
+        self.ini_delta_dis = torch.linalg.norm(block_pos[:, :2] - target_pos[:, :2], axis=1, keepdims=False)
+        self.ini_delta_ang = torch.abs(block_angle - target_angle)
+        self.reward0 = torch.tensor(1 / (1 + 0.1) * 1 / np.sqrt(1 + 0.1), device=gs.device, dtype=torch.float32)
 
-        # 保存初始状态用于奖励计算 (numpy)
-        self.ini_delta_dis = np.linalg.norm(block_pos_np[:, :2] - target_pos_np[:, :2], axis=1, keepdims=False)
-        self.ini_delta_ang = np.abs(block_angle_np - target_angle_np)
-        self.reward0 = 1 / (1 + 0.1) * 1 / np.sqrt(1 + 0.1)
-        
-        # 转换为torch tensor用于Genesis API
-        block_state_torch = to_torch(np.concatenate([
-            block_pos_np,
-            np.zeros(shape=(num_reset, 2), dtype=np.float32),  # roll & pitch 保持为0
-            block_angle_np
-        ], axis=-1))
-        
-        target_state_torch = to_torch(np.concatenate([
-            target_pos_np,
-            np.zeros(shape=(num_reset, 2), dtype=np.float32),  # roll & pitch 保持为0
-            target_angle_np
-        ], axis=-1))
+        block_state_torch = torch.concatenate([
+            block_pos,
+            torch.zeros(num_reset, 2, dtype=torch.float32, device=gs.device),  # roll & pitch 0
+            block_angle
+        ], axis=-1)
+        print(block_state_torch[0])
+
+        target_state_torch = torch.concatenate([
+            target_pos,
+            torch.zeros(num_reset, 2, dtype=torch.float32, device=gs.device),  # roll & pitch 0
+            target_angle
+        ], axis=-1)
+
+        # Debug: Store reset positions for environments 2 and 29
+        if hasattr(self, 'debug_reset_poses'):
+            self.debug_reset_poses.update({
+                int(env_idx): {
+                    'block_state': block_state_torch[i].cpu().numpy(),
+                    'target_state': target_state_torch[i].cpu().numpy()
+                } for i, env_idx in enumerate(envs_idx) if int(env_idx) in [2, 29]
+            })
+        else:
+            self.debug_reset_poses = {
+                int(env_idx): {
+                    'block_state': block_state_torch[i].cpu().numpy(),
+                    'target_state': target_state_torch[i].cpu().numpy()
+                } for i, env_idx in enumerate(envs_idx) if int(env_idx) in [2, 29]
+            }
         
         # home_pos = torch.zeros(size=(num_reset, len(self.robot_dofs_idx)), device=gs.device)
         home_pos_down = self._ikine(self.eef, 
@@ -312,15 +327,18 @@ class PushTEnv(gym.Env):
     def step(self, action: Optional[torch.Tensor] = None, 
              envs_idx: Optional[torch.Tensor] = None, 
              cal_all_keypoints: bool = False) -> Tuple[Dict[str, torch.Tensor], Union[float, np.ndarray], List[bool], Dict[str, torch.Tensor]]:
-        """执行环境步骤
+        """execute actions
         Args:
-            action: torch.Tensor - 动作 (需要是torch tensor用于Genesis API)
-            envs_idx: torch.Tensor - 环境索引 (GPU tensor)
+            action: torch.Tensor (torch tensor for Genesis API)
+            envs_idx: torch.Tensor
         """
         # action: agent_pos(eef_pos) n_envs * action_x, action_y
-        # one action, multi sim
+        # one action, multi sim 
+        # TODO check here
         if envs_idx is None:
             envs_idx = torch.arange(self.n_envs, device=gs.device, dtype=torch.int32)
+            print(111)
+        print("envs_idx", envs_idx)
         n_steps = int(self.sim_hz // self.control_hz)
         if action is not None:
             shape = np.shape(action)
@@ -340,6 +358,7 @@ class PushTEnv(gym.Env):
         self.calculate_all_keypoints()
 
         print("eef pose: ", self.poses['agent_pos'][0,:2])
+        print("cube pose:", self.poses['cur_Tpose'][0,:])
 
         ### JUDGE after sim steps, preventing misjudge the done condition
         observation = self._get_obs(rgb=True, envs_idx=envs_idx)
@@ -377,60 +396,97 @@ class PushTEnv(gym.Env):
 
     
     def calculate_all_keypoints(self) -> None:
-        """计算所有关键点 (使用numpy进行几何计算)"""
         # dis_ori = R_z * R_y * R_x * dis_direct
 
         if self.poses is None: 
             default_envs = torch.arange(self.n_envs, device=gs.device, dtype=torch.int32)
             self._get_poses(default_envs)
         
-        # 转换为numpy进行几何计算
-        cur_rot_ang_z = to_numpy(self.poses['cur_Tpose'][:, 5])
-        tar_rot_ang_z = to_numpy(self.poses['target_Tpose'][:, 5])
+        cur_rot_ang_z = self.poses['cur_Tpose'][:, 5]
+        tar_rot_ang_z = self.poses['target_Tpose'][:, 5]
 
-        dis_direct = np.array([[-0.03, -0.1, 0], [0.03, -0.1, 0], [0.03, -0.03, 0],
-                                [0.23, -0.03, 0], [0.23, 0.03, 0], [0.03, 0.03, 0], 
-                                [0.03, 0.1, 0], [-0.03, 0.1, 0]])
+        # # Debug: Check for invalid rotation angles and print problematic poses
+        # if not torch.all(torch.isfinite(cur_rot_ang_z)):
+        #     invalid_cur = torch.where(~torch.isfinite(cur_rot_ang_z))[0]
+        #     print(f"Invalid cur_rot_ang_z in envs: {invalid_cur.cpu().numpy()}")
+        #     for env_idx in invalid_cur:
+        #         env_int = int(env_idx)
+        #         print(f"Env {env_int} cur_Tpose: {self.poses['cur_Tpose'][env_idx].cpu().numpy()}")
+        #         if hasattr(self, 'debug_reset_poses') and env_int in self.debug_reset_poses:
+        #             print(f"Env {env_int} was reset to block_state: {self.debug_reset_poses[env_int]['block_state']}")
+        # if not torch.all(torch.isfinite(tar_rot_ang_z)):
+        #     invalid_tar = torch.where(~torch.isfinite(tar_rot_ang_z))[0]
+        #     print(f"Invalid tar_rot_ang_z in envs: {invalid_tar.cpu().numpy()}")
+        #     for env_idx in invalid_tar:
+        #         env_int = int(env_idx)
+        #         print(f"Env {env_int} target_Tpose: {self.poses['target_Tpose'][env_idx].cpu().numpy()}")
+        #         if hasattr(self, 'debug_reset_poses') and env_int in self.debug_reset_poses:
+        #             print(f"Env {env_int} was reset to target_state: {self.debug_reset_poses[env_int]['target_state']}")
 
-        Rz = lambda angz: np.array([np.transpose(
-                                np.array([[np.cos(ang_z), -np.sin(ang_z), 0], 
-                                        [np.sin(ang_z),   np.cos(ang_z), 0 ],
-                                        [0,              0,            1]], 
-                                )) for ang_z in angz ])
-                          
+        dis_direct = torch.tensor([
+            [[-0.03, -0.1, 0], [0.03, -0.1, 0], [0.03, -0.03, 0],
+             [0.23, -0.03, 0], [0.23, 0.03, 0], [0.03, 0.03, 0],
+             [0.03, 0.1, 0], [-0.03, 0.1, 0]]
+            for _ in range(self.n_envs)], device=gs.device)
+
+        # using row vector for saving the relative distance, so taking multiplication on the right side to
+        # multiply with unit vectors.
+        def Rz(angz):
+            cos_z = torch.cos(angz)
+            sin_z = torch.sin(angz)
+            zeros = torch.zeros_like(angz)
+            ones = torch.ones_like(angz)
+
+            return torch.stack([
+                torch.stack([cos_z, -sin_z, zeros], dim=-1),
+                torch.stack([sin_z, cos_z, zeros], dim=-1),
+                torch.stack([zeros, zeros, ones], dim=-1)
+            ], dim=-2)
+        # print(dis_direct.shape)
+        # print(cur_rot_ang_z.shape)
+        # print(Rz(cur_rot_ang_z).shape)                  
         cur_ori_dis = dis_direct @ Rz(cur_rot_ang_z)
         target_ori_dis = dis_direct @ Rz(tar_rot_ang_z)
 
-        cur_center = to_numpy(self.poses['cur_Tpose'][:, 0:3])
-        target_center = to_numpy(self.poses['target_Tpose'][:, 0:3])
+        # Debug: Check for invalid values after rotation
+        if not torch.all(torch.isfinite(cur_ori_dis)):
+            invalid_cur_dis = torch.where(~torch.all(torch.isfinite(cur_ori_dis), dim=(1,2)))[0]
+            print(f"Invalid cur_ori_dis in envs: {invalid_cur_dis.cpu().numpy()}")
+        if not torch.all(torch.isfinite(target_ori_dis)):
+            invalid_tar_dis = torch.where(~torch.all(torch.isfinite(target_ori_dis), dim=(1,2)))[0]
+            print(f"Invalid target_ori_dis in envs: {invalid_tar_dis.cpu().numpy()}")
 
-        # 保存为numpy arrays用于后续几何计算
+        cur_center = self.poses['cur_Tpose'][:, 0:3].view(-1, 1, 3)
+        target_center = self.poses['target_Tpose'][:, 0:3].view(-1, 1, 3)
+
+        # Debug: Check center positions
+        if not torch.all(torch.isfinite(cur_center)):
+            invalid_cur_center = torch.where(~torch.all(torch.isfinite(cur_center), dim=(1,2)))[0]
+            print(f"Invalid cur_center in envs: {invalid_cur_center.cpu().numpy()}")
+
         self.keypoints = {
-            'cur_keypoints': cur_center + cur_ori_dis,      # numpy array for geometry
-            'target_keypoints': target_center + target_ori_dis  # numpy array for geometry
+            'cur_keypoints': cur_center + cur_ori_dis,      # torch Tensor
+            'target_keypoints': target_center + target_ori_dis  # torch Tensor
         }
     
 
-    def _cal_rewards(self) -> Union[float, np.ndarray]:
-        """计算奖励 (使用numpy进行数值计算)"""
+    def _cal_rewards(self) -> Union[torch.FloatType, torch.Tensor]:
         if self.poses is None: 
             default_envs = torch.arange(self.n_envs, device=gs.device, dtype=torch.int32)
             self._get_poses(default_envs)
             
-        # 转换为numpy进行数值计算
-        cur_pos_np = to_numpy(self.poses['cur_Tpose'])
-        tar_pos_np = to_numpy(self.poses['target_Tpose'])
+        cur_pos = self.poses['cur_Tpose']
+        tar_pos = self.poses['target_Tpose']
 
-        dis = np.linalg.norm(cur_pos_np[:, :2] - tar_pos_np[:, :2])
-        ang = np.abs(cur_pos_np[:, 5] - tar_pos_np[:, 5])
+        dis = torch.linalg.norm(cur_pos[:, :2] - tar_pos[:, :2])
+        ang = torch.abs(cur_pos[:, 5] - tar_pos[:, 5])
 
-        return 1 / (dis/self.ini_delta_dis + 0.1) / np.sqrt(ang/self.ini_delta_ang + 0.1) - self.reward0
+        return 1 / (dis/self.ini_delta_dis + 0.1) / torch.sqrt(ang/self.ini_delta_ang + 0.1) - self.reward0
 
 
     def _ikine(self, link: gs.engine.entities.rigid_entity.RigidLink, 
                pos: torch.Tensor, quat: torch.Tensor, 
-               envs_idx: torch.Tensor) -> torch.Tensor:
-        """逆运动学计算 (Genesis API需要torch tensors)""" 
+               envs_idx: torch.Tensor) -> torch.Tensor: 
         qpos = self.robot.inverse_kinematics(
             link=link,
             pos=pos,  # torch tensor
@@ -447,18 +503,46 @@ class PushTEnv(gym.Env):
             return []
             
         # numpy arrays用于几何计算
-        cur_points_np = self.keypoints['cur_keypoints'][:, :, :2]
-        target_points_np = self.keypoints['target_keypoints'][:, :, :2]
-
+        cur_points_np = to_numpy(self.keypoints['cur_keypoints'][:, :, :2])
+        target_points_np = to_numpy(self.keypoints['target_keypoints'][:, :, :2])
+        # print(cur_points_np.shape)
         ratio: List[float] = []
         for i in range(cur_points_np.shape[0]):
-            cur_polygon = Polygon(cur_points_np[i])
-            tar_polygon = Polygon(target_points_np[i])
+            try:
+                # Check for invalid values
+                cur_points = cur_points_np[i]
+                tar_points = target_points_np[i]
 
-            intersection_geom = cur_polygon.intersection(tar_polygon)
-            area = intersection_geom.area 
-            ratio.append(area / cur_polygon.area)
+                if not np.all(np.isfinite(cur_points)) or not np.all(np.isfinite(tar_points)):
+                    print(f"Env {i}: Invalid values detected")
+                    ratio.append(0.0)
+                    continue
 
+                # Check for duplicate/collinear points
+                unique_cur = np.unique(cur_points, axis=0)
+                unique_tar = np.unique(tar_points, axis=0)
+
+                if len(unique_cur) < 3 or len(unique_tar) < 3:
+                    print(f"Env {i}: Not enough unique points")
+                    ratio.append(0.0)
+                    continue
+
+                cur_polygon = Polygon(cur_points)
+                tar_polygon = Polygon(tar_points)
+
+                if not cur_polygon.is_valid or not tar_polygon.is_valid:
+                    print(f"Env {i}: Invalid polygon")
+                    ratio.append(0.0)
+                    continue
+
+                intersection_geom = cur_polygon.intersection(tar_polygon)
+                area = intersection_geom.area
+                ratio.append(area / cur_polygon.area if cur_polygon.area > 0 else 0.0)
+
+            except Exception as e:
+                print(f"Env {i}: Polygon error - {e}")
+                ratio.append(0.0)
+        # print(ratio)
         return ratio
 
     def _get_poses(self, envs_idx: torch.Tensor) -> None:

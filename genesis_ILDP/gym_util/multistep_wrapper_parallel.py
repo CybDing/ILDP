@@ -81,9 +81,10 @@ class MultiStepWrapper(gym.Wrapper):
                 # Scalar values are shared across environments
                 extracted[key] = value
         return extracted
-
+    
     def step(self, action):
         """Execute multi-step actions efficiently."""
+        # global done_list_global 
         
         # Validate action format once
         self._validate_action(action)
@@ -102,6 +103,9 @@ class MultiStepWrapper(gym.Wrapper):
         done_is_array = None
         
         # Execute n_action_steps
+
+        print("Active_envs counts: ",  active_envs_tensor.shape) 
+        # print("Current Done list:", done_list_global)
         for step_idx in range(self.n_action_steps):
             current_action = action[:, step_idx, :]
             
@@ -131,10 +135,14 @@ class MultiStepWrapper(gym.Wrapper):
                 if (self.max_episode_steps is not None and 
                     self.step_counts[env_idx] >= self.max_episode_steps):
                     env_done = True
+                    # print("*" * 50)
+                    
                 
                 # Track done environments (avoid duplicates)
                 if env_done and env_idx not in done_list:
                     done_list.append(env_idx)
+                    print("*" * 50)
+                    # done_list_global.append(env_idx)
         
         # Aggregate results efficiently
         observation = self._get_obs(self.n_obs_steps)
@@ -158,7 +166,7 @@ class MultiStepWrapper(gym.Wrapper):
             env_rewards = self.current_step_rewards[env_idx]
             if env_rewards:
                 try:
-                    reward = aggregate(env_rewards, self.reward_agg_method)
+                    reward = aggregate(torch.stack(env_rewards), self.reward_agg_method)
                     aggregated_rewards.append(reward)
                 except ValueError as e:
                     raise RuntimeError(f"Failed to aggregate rewards for environment {env_idx}: {e}")
@@ -169,7 +177,7 @@ class MultiStepWrapper(gym.Wrapper):
                     raise RuntimeError(f"Active environment {env_idx} has no reward data")
                 aggregated_rewards.append(0.0)
         
-        return np.array(aggregated_rewards)
+        return torch.stack(aggregated_rewards, dim=0)
     
     def _validate_action(self, action):
         """Validate action format once."""
@@ -265,22 +273,20 @@ def repeated_space(space, n):
 
 def aggregate(data, method='max'):
     """Aggregate reward data using specified method."""
-    if not data:
-        raise ValueError(f"Cannot aggregate empty data with method '{method}'")
-        
-    # Use dict for cleaner lookup
+
+    # Use dict for cleaner lookup - aggregate across dimension 0 (steps)
     aggregation_methods = {
-        'max': np.max,
-        'min': np.min, 
-        'mean': np.mean,
-        'sum': np.sum
+        'max': lambda x: torch.max(x, dim=0)[0],
+        'min': lambda x: torch.min(x, dim=0)[0],
+        'mean': lambda x: torch.mean(x, dim=0),
+        'sum': lambda x: torch.sum(x, dim=0)
     }
-    
+
     if method not in aggregation_methods:
         raise ValueError(f"Unsupported aggregation method: {method}. Choose from {list(aggregation_methods.keys())}")
-    
+
     try:
-        return float(aggregation_methods[method](data))
+        return aggregation_methods[method](data)
     except Exception as e:
         raise ValueError(f"Failed to aggregate data with method '{method}': {e}")
 

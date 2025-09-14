@@ -43,7 +43,7 @@ class PushTImageRunner(BaseImageRunner):
                 #  crf = 22, # video quality
                  past_action=False,
                  train_start_seed = 0,
-                 test_start_seed = 100000, 
+                 test_start_seed = 5000, 
                  # does not reach 100000 episodes
                  enable_render = True,
                  max_envs_running = 3,
@@ -64,12 +64,12 @@ class PushTImageRunner(BaseImageRunner):
                     PushTEnv(
                         render_size=image_shape,
                         fps = fps,
-                        show_fps=False
+                        show_fps=True
                     ),
                 n_obs_steps=n_obs_steps,
                 n_action_steps=n_action_steps,
                 max_episode_steps=max_steps,
-                n_envs = self.parallel_envs_counts
+                n_envs = self.n_envs
             )
         self.n_train = n_train
         self.n_test = n_test
@@ -102,7 +102,7 @@ class PushTImageRunner(BaseImageRunner):
         self._prepare_env()
         obs = self.env.reset() # return (parallel_envs_counts, obs_dict)
         past_action = None
-        policy.reset()  # Reset states for stateful policy
+        # policy.reset()  # Reset states for stateful policy
         done = False
 
         pbar = tqdm.tqdm(total=self.max_steps * self.n_envs, desc=f"Eval PushTImageRunner",
@@ -111,7 +111,7 @@ class PushTImageRunner(BaseImageRunner):
         if self.enable_render: 
             self.env.start_recording()
 
-        envs_remained = self.n_envs
+        # envs_remained = self.n_envs
             
         try:
             while not done:
@@ -168,8 +168,9 @@ class PushTImageRunner(BaseImageRunner):
         return log_data
 
     def _setup_envs(self,):
-
-        self.env.start(n_envs=self.n_envs, env_separate=False)
+        # TODO should refine this initializing process inside the wrapper function without directly callout the start function from api env
+        # which might be inconsistent with current configuration 
+        self.env.start(n_envs=self.n_envs, env_separate=True)
         print(f"------SETUP COMPLETE!------\
               \n Configuration:  n_test={self.n_test},  n_train={self.n_train}, \
               n_envs={self.n_envs}\n max_steps={self.max_steps}")
