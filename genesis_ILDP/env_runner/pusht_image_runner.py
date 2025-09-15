@@ -29,10 +29,10 @@ base_video_path = target_folder1
 class PushTImageRunner(BaseImageRunner):
     def __init__(self, 
                  output_dir,
-                 n_train = 0, # Using train seed 
+                 n_train = 50, # Using train seed 
                  n_train_vis = 0,
-                 n_test = 50, # Using test seed
-                 n_test_vis = 50,
+                 n_test = 10, # Using test seed
+                 n_test_vis = 10,
                  n_obs_steps = 2,
                  n_action_steps = 8,
                  max_steps=200,
@@ -64,7 +64,7 @@ class PushTImageRunner(BaseImageRunner):
                     PushTEnv(
                         render_size=image_shape,
                         fps = fps,
-                        show_fps=True
+                        show_fps=False
                     ),
                 n_obs_steps=n_obs_steps,
                 n_action_steps=n_action_steps,
@@ -170,7 +170,7 @@ class PushTImageRunner(BaseImageRunner):
     def _setup_envs(self,):
         # TODO should refine this initializing process inside the wrapper function without directly callout the start function from api env
         # which might be inconsistent with current configuration 
-        self.env.start(n_envs=self.n_envs, env_separate=True)
+        self.env.start(n_envs=self.n_envs, env_separate=True, show_interact_viewer = False)
         print(f"------SETUP COMPLETE!------\
               \n Configuration:  n_test={self.n_test},  n_train={self.n_train}, \
               n_envs={self.n_envs}\n max_steps={self.max_steps}")

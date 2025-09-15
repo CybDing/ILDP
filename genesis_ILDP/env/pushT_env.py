@@ -24,7 +24,7 @@ class PushTEnv(gym.Env):
     metadata = {"render.mode": ["rgb_array"], "video.frames_per_second": 10}
 
     def __init__(self,
-                 render_size=(96, 96),
+                 render_size=(500, 500),
                  xlim=.3,
                  ylim=.3,
                  seed=None, # seed 
@@ -91,12 +91,12 @@ class PushTEnv(gym.Env):
             backend = gs.gpu
         )
         self.scene = gs.Scene(
-            show_FPS=self.show_fps,
+            show_FPS=True,
             sim_options=gs.options.SimOptions(dt=1./self.sim_hz, substeps=1),
             viewer_options=gs.options.ViewerOptions(
-                max_FPS=int(self.sim_hz),
+                max_FPS=40,
                 camera_pos=(2, 2, 1.5),
-                camera_lookat=(0.7, 0.7, 0.3),
+                camera_lookat=(0.3, 0.3, 0.3),
                 camera_fov=40 # angle look at
             ),
 
@@ -158,8 +158,8 @@ class PushTEnv(gym.Env):
 
         self.cam = self.scene.add_camera(
             res=self.render_size,
-            pos=(1, 1, 0.7),
-            lookat=(0.7, 0.7, 0.0),
+            pos=(0.85, 0.85, 1.2),
+            lookat=(0.3, 0.3, 0.0),
             fov=60,
             GUI=show_camera,
         )
@@ -206,7 +206,7 @@ class PushTEnv(gym.Env):
 
 
     def reset_idx(self, envs_idx: torch.Tensor) -> Dict[str, torch.Tensor]:
-        """重置指定环境的状态
+        """
         Args:
             envs_idx: torch.Tensor - 需要重置的环境索引 (GPU tensor for Genesis API)
         Returns:
@@ -262,7 +262,7 @@ class PushTEnv(gym.Env):
             torch.zeros(num_reset, 2, dtype=torch.float32, device=gs.device),  # roll & pitch 0
             block_angle
         ], axis=-1)
-        print(block_state_torch[0])
+        # print(block_state_torch[0])
 
         target_state_torch = torch.concatenate([
             target_pos,
@@ -287,11 +287,15 @@ class PushTEnv(gym.Env):
             }
         
         # home_pos = torch.zeros(size=(num_reset, len(self.robot_dofs_idx)), device=gs.device)
-        home_pos_down = self._ikine(self.eef, 
-                                    pos=torch.tensor([0.1, 0.1, 0.3]).repeat(num_reset, 1),
-                                    quat=torch.tensor([0, 0, 1, 0]).repeat(num_reset, 1), 
-                                    envs_idx = envs_idx)[:, 0:7]
-
+        # print("current joint position:", self.robot.get_dofs_position(envs_idx=envs_idx))
+        # home_pos_down = self._ikine(self.eef, 
+        #                             pos=torch.tensor([0.1, 0.1, 0.3]).repeat(num_reset, 1),
+        #                             quat=torch.tensor([0, 0, 1, 0]).repeat(num_reset, 1), 
+        #                             envs_idx = envs_idx)[:, 0:7]
+        home_pos_down = torch.Tensor([[ 2.5060, -1.5572, -0.5973,  2.4180,  2.3973,  0.5915, -0.9210]])
+        # print("Predicted joint position:", home_pos_down)
+        # raise ValueError
+    
         self.robot.set_dofs_position(
             position=home_pos_down,
             dofs_idx_local=self.robot_dofs_idx[0:7],
@@ -332,13 +336,14 @@ class PushTEnv(gym.Env):
             action: torch.Tensor (torch tensor for Genesis API)
             envs_idx: torch.Tensor
         """
-        # action: agent_pos(eef_pos) n_envs * action_x, action_y
-        # one action, multi sim 
+        # action: agent_pos(eef_pos) n_envs * action_x, action_y, action_z
+        # a single action, multi steps for smooth pid control of the arm
         # TODO check here
+
         if envs_idx is None:
             envs_idx = torch.arange(self.n_envs, device=gs.device, dtype=torch.int32)
-            print(111)
-        print("envs_idx", envs_idx)
+            # print(111)
+        # print("envs_idx", envs_idx)
         n_steps = int(self.sim_hz // self.control_hz)
         if action is not None:
             shape = np.shape(action)
@@ -347,24 +352,34 @@ class PushTEnv(gym.Env):
             else: 
                quat = torch.tile(torch.tensor([0, 0, 1, 0], device=self.device), (len(envs_idx), 1))
                qpos = self._ikine(self.eef, action, quat, envs_idx)
-               self.robot.control_dofs_position(position=qpos[:, 0:7], # does not control tcp joints
+            self.robot.control_dofs_position(position=qpos[:, 0:7], # does not control tcp joints
                                         dofs_idx_local=self.robot_dofs_idx[0:7], 
                                         envs_idx=envs_idx
-                                     ) 
+                                        )   
+            #    waypoints = self.robot.plan_path(
+            #        qpos_goal = qpos, 
+            #        num_waypoints = n_steps
+            #    )
         for _ in range(n_steps):
             self.scene.step()
+        # for point in waypoints:
+        #     self.robot.control_dofs_position(position=point[:, 0:7], # does not control tcp joints
+        #                                 dofs_idx_local=self.robot_dofs_idx[0:7], 
+        #                                 envs_idx=envs_idx
+        #                                 )   
+        #     self.scene.step()
 
         self._get_poses(envs_idx) # get Tpos, agent_pos
         self.calculate_all_keypoints()
 
         print("eef pose: ", self.poses['agent_pos'][0,:2])
-        print("cube pose:", self.poses['cur_Tpose'][0,:])
+        # print("cube pose:", self.poses['cur_Tpose'][0,:])
 
         ### JUDGE after sim steps, preventing misjudge the done condition
         observation = self._get_obs(rgb=True, envs_idx=envs_idx)
         info = self._get_info(envs_idx)
         
-        done = [ratio > 0.6 for ratio in self._cal_intersection()]
+        done = [ratio > 0.95 for ratio in self._cal_intersection()]
         reward = self._cal_rewards()
 
         return observation, reward, done, info
@@ -437,11 +452,12 @@ class PushTEnv(gym.Env):
             zeros = torch.zeros_like(angz)
             ones = torch.ones_like(angz)
 
-            return torch.stack([
+            return torch.transpose(torch.stack([
                 torch.stack([cos_z, -sin_z, zeros], dim=-1),
                 torch.stack([sin_z, cos_z, zeros], dim=-1),
                 torch.stack([zeros, zeros, ones], dim=-1)
-            ], dim=-2)
+            ], dim=-2), dim0=-2, dim1=-1)
+        
         # print(dis_direct.shape)
         # print(cur_rot_ang_z.shape)
         # print(Rz(cur_rot_ang_z).shape)                  
@@ -449,20 +465,20 @@ class PushTEnv(gym.Env):
         target_ori_dis = dis_direct @ Rz(tar_rot_ang_z)
 
         # Debug: Check for invalid values after rotation
-        if not torch.all(torch.isfinite(cur_ori_dis)):
-            invalid_cur_dis = torch.where(~torch.all(torch.isfinite(cur_ori_dis), dim=(1,2)))[0]
-            print(f"Invalid cur_ori_dis in envs: {invalid_cur_dis.cpu().numpy()}")
-        if not torch.all(torch.isfinite(target_ori_dis)):
-            invalid_tar_dis = torch.where(~torch.all(torch.isfinite(target_ori_dis), dim=(1,2)))[0]
-            print(f"Invalid target_ori_dis in envs: {invalid_tar_dis.cpu().numpy()}")
+        # if not torch.all(torch.isfinite(cur_ori_dis)):
+        #     invalid_cur_dis = torch.where(~torch.all(torch.isfinite(cur_ori_dis), dim=(1,2)))[0]
+        #     print(f"Invalid cur_ori_dis in envs: {invalid_cur_dis.cpu().numpy()}")
+        # if not torch.all(torch.isfinite(target_ori_dis)):
+        #     invalid_tar_dis = torch.where(~torch.all(torch.isfinite(target_ori_dis), dim=(1,2)))[0]
+        #     print(f"Invalid target_ori_dis in envs: {invalid_tar_dis.cpu().numpy()}")
 
         cur_center = self.poses['cur_Tpose'][:, 0:3].view(-1, 1, 3)
         target_center = self.poses['target_Tpose'][:, 0:3].view(-1, 1, 3)
 
-        # Debug: Check center positions
-        if not torch.all(torch.isfinite(cur_center)):
-            invalid_cur_center = torch.where(~torch.all(torch.isfinite(cur_center), dim=(1,2)))[0]
-            print(f"Invalid cur_center in envs: {invalid_cur_center.cpu().numpy()}")
+        # # Debug: Check center positions
+        # if not torch.all(torch.isfinite(cur_center)):
+        #     invalid_cur_center = torch.where(~torch.all(torch.isfinite(cur_center), dim=(1,2)))[0]
+        #     print(f"Invalid cur_center in envs: {invalid_cur_center.cpu().numpy()}")
 
         self.keypoints = {
             'cur_keypoints': cur_center + cur_ori_dis,      # torch Tensor
@@ -489,6 +505,7 @@ class PushTEnv(gym.Env):
                envs_idx: torch.Tensor) -> torch.Tensor: 
         qpos = self.robot.inverse_kinematics(
             link=link,
+            init_qpos = self.robot.get_dofs_position(envs_idx = envs_idx),
             pos=pos,  # torch tensor
             quat=quat,  # torch tensor  
             dofs_idx_local=self.robot_dofs_idx[0:7],
@@ -498,14 +515,13 @@ class PushTEnv(gym.Env):
     
 
     def _cal_intersection(self) -> List[float]:
-        """计算当前和目标多边形的交集比率 (使用numpy进行几何计算)"""
         if self.keypoints is None:
             return []
             
-        # numpy arrays用于几何计算
         cur_points_np = to_numpy(self.keypoints['cur_keypoints'][:, :, :2])
         target_points_np = to_numpy(self.keypoints['target_keypoints'][:, :, :2])
-        # print(cur_points_np.shape)
+        print(cur_points_np)
+        print(target_points_np)
         ratio: List[float] = []
         for i in range(cur_points_np.shape[0]):
             try:
@@ -542,7 +558,7 @@ class PushTEnv(gym.Env):
             except Exception as e:
                 print(f"Env {i}: Polygon error - {e}")
                 ratio.append(0.0)
-        # print(ratio)
+        print(ratio)
         return ratio
 
     def _get_poses(self, envs_idx: torch.Tensor) -> None:
@@ -614,15 +630,13 @@ class PushTEnv(gym.Env):
 if __name__ == '__main__':
     env = PushTEnv()
     env.start(n_envs=1, show_camera=False, show_interact_viewer=False, 
-              env_separate=False, seed=[0])
-    env.seed(np.arange(1))
+              env_separate=True, seed=[0])
+    env.seed([5004])
     env.reset()
 
-   # env.start_recording()
+    env.start_recording()
     for i in range(500):
-        # env.step(action=torch.tensor([[0.1, 0.1],
-        #                               [0.1, 0.1]]))
-        env.step()
+        env.step(action=torch.tensor([[0.3, 0.3, 0.3]]))
         if i % 10 == 0: 
             # env.reset()
             # print(env.calculate_all_keypoints())
@@ -630,4 +644,4 @@ if __name__ == '__main__':
             # print(env._cal_intersection())
             # print(env.get_key_points())
 
-    #env.stop_recording()
+    env.stop_recording()

@@ -15,5 +15,6 @@ class TestPolicy():
             n_envs = obs_dict[key].shape[0]
             break
         
-        return torch.ones(size=(n_envs, self.n_action_steps, 2)) * 0.6
+        action = torch.Tensor([0.1, 0.1, 0.3]).repeat(n_envs, self.n_action_steps, 1)
+        return action 
     

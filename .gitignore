@@ -57,4 +57,5 @@ backup/
 /outputs
 
 .DS_Store
-test* 
+test*
+debug* 

@@ -231,8 +231,6 @@ class ActionDiffusionImagePolicy(BaseImagePolicy):
         # Compute MSE loss
         loss = torch.nn.functional.mse_loss(predicted_noise, random_noise)
         return loss
-
-    # ========== Action Generation Methods ==========
     
     def action_generation_ddpm(self, imgs, agent_pos, batch_size):
         """DDPM sampling for action generation."""
