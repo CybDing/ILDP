@@ -472,8 +472,8 @@ class PushTEnv(gym.Env):
         #     invalid_tar_dis = torch.where(~torch.all(torch.isfinite(target_ori_dis), dim=(1,2)))[0]
         #     print(f"Invalid target_ori_dis in envs: {invalid_tar_dis.cpu().numpy()}")
 
-        cur_center = self.poses['cur_Tpose'][:, 0:3].view(-1, 1, 3)
-        target_center = self.poses['target_Tpose'][:, 0:3].view(-1, 1, 3)
+        cur_center = self.poses['cur_Tpose'][:, 0:3].reshape(-1, 1, 3)
+        target_center = self.poses['target_Tpose'][:, 0:3].reshape(-1, 1, 3)
 
         # # Debug: Check center positions
         # if not torch.all(torch.isfinite(cur_center)):

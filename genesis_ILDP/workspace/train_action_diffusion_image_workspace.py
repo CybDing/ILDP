@@ -19,14 +19,12 @@ import wandb
 import tqdm
 import numpy as np
 
-# Import from genesis_ILDP
 from genesis_ILDP.workspace.base_workspace import BaseWorkspace
 from genesis_ILDP.policy.action_diffusion_image_policy import ActionDiffusionImagePolicy
 from genesis_ILDP.dataset.base_dataset import BaseImageDataset
 from genesis_ILDP.env_runner.base_image_runner import BaseImageRunner
 from genesis_ILDP.utils.pytorch_util import dict_apply, optimizer_to
 
-# Import from original diffusion_policy for shared components
 from diffusion_policy.common.checkpoint_util import TopKCheckpointManager
 from diffusion_policy.common.json_logger import JsonLogger
 from genesis_ILDP.model.diffusion.ema_model import EMAModel
@@ -84,12 +82,25 @@ class TrainActionDiffusionImageWorkspace(BaseWorkspace):
         dataset: BaseImageDataset
         dataset = hydra.utils.instantiate(cfg.task.dataset)
         assert isinstance(dataset, BaseImageDataset), f"Expected BaseImageDataset, got {type(dataset)}"
-        train_dataloader = DataLoader(dataset, **cfg.dataloader)
+
+        # Handle MPS device compatibility for DataLoader
+        dataloader_kwargs = dict(cfg.dataloader)
+        val_dataloader_kwargs = dict(cfg.val_dataloader)
+
+        device = torch.device(cfg.training.device)
+        seed = cfg.training.seed
+        if device.type == 'mps' and dataloader_kwargs.get('shuffle', False):
+            # MPS has compatibility issues with DataLoader shuffling
+            # Disable shuffling for MPS devices to avoid generator conflicts
+            dataloader_kwargs['shuffle'] = False
+            print("Warning: Disabled DataLoader shuffle for MPS device compatibility")
+
+        train_dataloader = DataLoader(dataset, **dataloader_kwargs)
         normalizer = dataset.get_normalizer()
 
         # configure validation dataset
         val_dataset = dataset.get_validation_dataset()
-        val_dataloader = DataLoader(val_dataset, **cfg.val_dataloader)
+        val_dataloader = DataLoader(val_dataset, **val_dataloader_kwargs)
 
         # *** IMPORTANT: Set normalizer on model ***
         self.model.set_normalizer(normalizer)
@@ -130,17 +141,21 @@ class TrainActionDiffusionImageWorkspace(BaseWorkspace):
                 print("Training will continue without environment evaluation")
 
         # configure logging
-        wandb_run = wandb.init(
-            dir=str(self.output_dir),
-            config=OmegaConf.to_container(cfg, resolve=True),
-            **cfg.logging
-        )
-        wandb.config.update(
-            {
-                "output_dir": self.output_dir,
-                "model_type": "ActionDiffusionImagePolicy"
-            }
-        )
+        wandb_run = None
+        if cfg.logging.mode != 'disabled':
+            wandb_run = wandb.init(
+                dir=str(self.output_dir),
+                config=OmegaConf.to_container(cfg, resolve=True),
+                **cfg.logging
+            )
+            wandb.config.update(
+                {
+                    "output_dir": self.output_dir,
+                    "model_type": "ActionDiffusionImagePolicy"
+                }
+            )
+        else:
+            print("Wandb logging disabled")
 
         # configure checkpoint
         topk_manager = TopKCheckpointManager(
@@ -149,11 +164,20 @@ class TrainActionDiffusionImageWorkspace(BaseWorkspace):
         )
 
         # device transfer
-        device = torch.device(cfg.training.device)
         self.model.to(device)
         if self.ema_model is not None:
             self.ema_model.to(device)
         optimizer_to(self.optimizer, device)
+
+        # Set generator device for MPS compatibility
+        if device.type == 'mps':
+            # For MPS, we need to ensure the generator is on the correct device
+            # But PyTorch DataLoader samplers don't support MPS generators yet
+            # So we'll need to handle this differently
+            print("Warning: MPS device detected. DataLoader may have compatibility issues.")
+            print("Consider using device='cpu' if you encounter random sampling errors.")
+            print("Note: MPS has known issues with certain convolution backward passes.")
+            print("If you encounter 'view size is not compatible' errors, try using device='cpu'.")
 
         # save batch for sampling
         train_sampling_batch = None
@@ -174,7 +198,6 @@ class TrainActionDiffusionImageWorkspace(BaseWorkspace):
         with JsonLogger(log_path) as json_logger:
             for local_epoch_idx in range(cfg.training.num_epochs):
                 step_log = dict()
-                # ========= train for this epoch ==========
                 train_losses = list()
                 with tqdm.tqdm(train_dataloader, desc=f"Training epoch {self.epoch}", 
                         leave=False, mininterval=cfg.training.tqdm_interval_sec) as tepoch:
@@ -185,9 +208,25 @@ class TrainActionDiffusionImageWorkspace(BaseWorkspace):
                             train_sampling_batch = batch
 
                         # compute loss using ActionDiffusionImagePolicy
-                        raw_loss = self.model.compute_loss(batch)
-                        loss = raw_loss / cfg.training.gradient_accumulate_every
-                        loss.backward()
+                        try:
+                            # Enable anomaly detection to pinpoint the exact .view() call
+                            torch.autograd.set_detect_anomaly(True)
+                            raw_loss = self.model.compute_loss(batch)
+                            loss = raw_loss / cfg.training.gradient_accumulate_every
+                            loss.backward()
+                        except RuntimeError as e:
+                            if "view size is not compatible" in str(e):
+                                print(f"RuntimeError during backward pass: {e}")
+                                print("This suggests a .view() call on a non-contiguous tensor in the compute_loss method")
+                                print("Check ActionDiffusionImagePolicy.compute_loss() and its called methods")
+                                # Print batch shapes for debugging
+                                for key, value in batch.items():
+                                    if hasattr(value, 'shape'):
+                                        print(f"batch['{key}'].shape: {value.shape}")
+                                        print(f"batch['{key}'].is_contiguous(): {value.is_contiguous()}")
+                                raise
+                            else:
+                                raise
 
                         # step optimizer
                         if self.global_step % cfg.training.gradient_accumulate_every == 0:
@@ -213,7 +252,8 @@ class TrainActionDiffusionImageWorkspace(BaseWorkspace):
                         is_last_batch = (batch_idx == (len(train_dataloader)-1))
                         if not is_last_batch:
                             # log of last step is combined with validation and rollout
-                            wandb_run.log(step_log, step=self.global_step)
+                            if wandb_run is not None:
+                                wandb_run.log(step_log, step=self.global_step)
                             json_logger.log(step_log)
                             self.global_step += 1
 
@@ -314,18 +354,20 @@ class TrainActionDiffusionImageWorkspace(BaseWorkspace):
 
                 # end of epoch
                 # log of last step is combined with validation and rollout
-                wandb_run.log(step_log, step=self.global_step)
+                if wandb_run is not None:
+                    wandb_run.log(step_log, step=self.global_step)
                 json_logger.log(step_log)
                 self.global_step += 1
                 self.epoch += 1
 
         print(f"Training completed after {cfg.training.num_epochs} epochs!")
-        wandb_run.finish()
+        if wandb_run is not None:
+            wandb_run.finish()
 
 @hydra.main(
     version_base=None,
-    config_path=str(pathlib.Path(__file__).parent.parent.joinpath("config")), 
-    config_name=pathlib.Path(__file__).stem)
+    config_path=str(pathlib.Path(__file__).parent.parent.joinpath("config")),
+    config_name="train_action_diffusion_pusht_image")
 def main(cfg):
     workspace = TrainActionDiffusionImageWorkspace(cfg)
     workspace.run()

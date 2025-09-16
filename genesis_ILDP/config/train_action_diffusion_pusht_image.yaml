@@ -57,7 +57,7 @@ task:
   # Dataset configuration
   dataset:
     _target_: genesis_ILDP.dataset.pusht_image_dataset.PushTImageDataset
-    zarr_path: data/pusht/pusht_cchi_v7_replay.zarr
+    zarr_path: genesis_ILDP/data/train_data/pusht/pusht_cchi_v7_replay.zarr
     horizon: ${horizon}
     pad_before: ${eval:'${n_obs_steps}-1'}     # 1
     pad_after: ${eval:'${n_action_steps}-1'}   # 7  
@@ -121,14 +121,14 @@ optimizer:
 # === DATA LOADING ===
 dataloader:
   batch_size: ${training.batch_size}
-  num_workers: 8
+  num_workers: 0  # Disable multiprocessing for testing
   persistent_workers: false
   pin_memory: true
   shuffle: true
 
 val_dataloader:
   batch_size: ${training.batch_size}
-  num_workers: 8
+  num_workers: 0  # Disable multiprocessing for testing
   persistent_workers: false
   pin_memory: true
   shuffle: false
@@ -154,7 +154,7 @@ checkpoint:
 
 # === LOGGING CONFIGURATION ===
 logging:
-  mode: online                 # 'online', 'offline', or 'disabled'
+  mode: disabled               # 'online', 'offline', or 'disabled'
   project: genesis_ILDP_action_diffusion
   group: action_diffusion_pusht
   name: ${exp_name}_${now:%Y.%m.%d-%H.%M.%S}
@@ -168,4 +168,4 @@ logging:
 # === OUTPUT CONFIGURATION ===
 multi_run:
   run_dir: outputs/${now:%Y.%m.%d}/${now:%H.%M.%S}_${exp_name}
-  wandb_name_base: ${now:%Y.%m.%d-${now:%H.%M.%S}_${exp_name}
+  wandb_name_base: ${now:%Y.%m.%d}-${now:%H.%M.%S}_${exp_name}
