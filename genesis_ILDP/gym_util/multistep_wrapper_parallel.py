@@ -104,7 +104,8 @@ class MultiStepWrapper(gym.Wrapper):
         
         # Execute n_action_steps
 
-        print("Active_envs counts: ",  active_envs_tensor.shape) 
+        print("Active_envs counts: ",  active_envs_tensor.shape)
+        print(f"Received action shape: {action.shape}, expected: [{len(self.active_envs)}, {self.n_action_steps}, action_dim]")
         # print("Current Done list:", done_list_global)
         for step_idx in range(self.n_action_steps):
             current_action = action[:, step_idx, :]

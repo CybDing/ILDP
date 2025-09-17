@@ -10,12 +10,12 @@ import os
 from pathlib import Path
 from pygame.locals import *
 from flask import Flask, request, jsonify
+from typing import Deque, Union
 
-# sys.path.append('/Users/ding/Desktop/DesktopAir/Research/RoboArm/proj_gene')
 from diffusion_policy.common.replay_buffer import ReplayBuffer
 
 pygame.init()
-width, height = 1000, 800
+width, height = 800, 800 # 最远距离 0.4 m
 screen = pygame.display.set_mode((width, height))
 clock = pygame.time.Clock()
 font = pygame.font.SysFont('Arial', 16)
@@ -26,23 +26,24 @@ GREEN = (50, 255, 50)
 BLUE = (50, 50, 255)
 BLACK = (0, 0, 0)
 YELLOW = (255, 255, 0)
-SCALE = 800
+SCALE = 1000
 
 latest_data = {
     "cur_keypoints": [],
     "target_keypoints": [],
-    "agent_pos": [0.3, 0.3],
+    "agent_pos": [0.1, 0.1],
     "intersection_ratio": 0.0,
     "reward": 0.0,
     "image": None
 }
+    
 data_lock = threading.Lock()
 
 class SmartRecordingController:
     def __init__(self):
         self.state = 'IDLE'  # IDLE, WAITING, RECORDING, COMPLETING
         self.movement_threshold = 0.02
-        self.success_threshold = 0.85
+        self.success_threshold = 0.93
         self.last_mouse_pos = None
         
     def should_start_recording(self, mouse_pos):
@@ -73,20 +74,25 @@ class DataCollector:
         except:
             return None
     
-    def record_timestep(self, obs_data, mouse_pos):
+    def record_timestep(self, obs_data):
+
+        # TODO change the record logic into recording the absolute position for ease of saving directly the position, 
+        # the relative version could be implemented inside the dataset, by calculating the temporal difference between the 
+        # action inserted for executing the arm
+        
         image = self.decode_image(obs_data.get('image'))
         if image is None:
             return False
-            
-        current_agent_pos = np.array(obs_data.get('agent_pos', [0.3, 0.3])[:2], dtype=np.float32)
-        target_pos = np.array([mouse_pos[0]/SCALE, mouse_pos[1]/SCALE], dtype=np.float32)
         
-        # Position delta action
+        # check if the tensor here should be which dimensional(commonly to be 2 dim)
+        current_agent_pos = np.array(obs_data.get('agent_pos', [0.1, 0.1])[:2], dtype=np.float32)
+        target_pos = np.array(obs_data.get('target_pos', [0.1, 0.1])[:2], dtype=np.float32)
+        
         action = target_pos - self.last_agent_pos
         
-        # Combined state (compatible with original format)
+        # Combined state (compatible with original dataset from diffusion_policy)
         state = np.concatenate([
-            current_agent_pos,  # [0:2] agent_pos for compatibility
+            current_agent_pos, 
             [obs_data.get('intersection_ratio', 0.0)],
             [obs_data.get('reward', 0.0)]
         ]).astype(np.float32)
@@ -155,8 +161,7 @@ class DataCollector:
             print(f"Successfully saved {len(self.episodes)} episodes to {filepath}")
             print(f"Total timesteps: {replay_buffer.n_steps}")
             
-            # Print data structure info
-            print("📁 Data structure:")
+            print("Data structure:")
             for key in replay_buffer.data.keys():
                 arr = replay_buffer.data[key]
                 print(f"  {key}: shape={arr.shape}, dtype={arr.dtype}")
@@ -174,11 +179,41 @@ data_collector = DataCollector()
 action_sending = False
 current_mouse_pos = (400, 400)
 
-def send_action(x, y):
+# try to match the timestamp in the receive buffer when calling the saving function respect to the action_obs_pair
+# use buffer to prevent if there is any action that is not processed saving
+latest_action_receive_buffer = {
+    # "action": list(), 
+    "timestamp": Deque(maxlen=30)
+} 
+
+# this should be filled when the action is being sent to the pushT_env_server.py
+action_obs_buffer = {
+      "cur_keypoints": Deque(maxlen=30),
+      "target_keypoints": Deque(maxlen=30),
+      "agent_pos": Deque(maxlen=30),
+      "target_pos": Deque(maxlen=30),
+      "intersection_ratio": Deque(maxlen=30),
+      "reward": Deque(maxlen=30),
+      "image": Deque(maxlen=30),
+      "timestamp": Deque(maxlen=30)  
+}
+
+def send_action(x, y, timestamp):
     try:
-        payload = {"action": [x, y]}
-        response = requests.post("http://localhost:7100/api/action", 
+        cur_time = timestamp
+        # send timestamp to make sure the action could be tracked when saving 
+        payload = {"action": [x, y],
+                   "timestamp": cur_time}
+        
+        response = requests.post("http://localhost:7100/api/action",
                                json=payload, timeout=0.1)
+        return response.status_code == 200
+    except:
+        return False
+
+def reset_environment():
+    try:
+        response = requests.post("http://localhost:7100/api/reset", timeout=1.0)
         return response.status_code == 200
     except:
         return False
@@ -198,8 +233,94 @@ def receive_data():
         pass
     return jsonify({"error": "failed"}), 400
 
+@app.route('/api/received_action', methods=['POST'])
+def get_received_action():
+    global latest_action_receive_buffer
+    try:
+        data = request.get_json()
+        if data and ("timestamp" in data):
+            with data_lock:
+                latest_action_receive_buffer["timestamp"].append(data["timestamp"])
+            return jsonify({"status": "success"}), 200
+    except:
+        pass
+    return jsonify({"status": "failed"}), 200
+
+
 def start_flask_server():
     app.run(host='0.0.0.0', port=6000, debug=False, threaded=True, use_reloader=False)
+
+
+def get_dict_slice(dictionary, index):
+    dict_slice = {}
+    assert isinstance(dictionary, dict)
+    for key in dictionary.keys():
+        if isinstance(dictionary[key], Union[list, Deque]):
+            print(key)
+            print(index)
+            print(len(dictionary[key]))
+            dict_slice[key] = dictionary[key][index]
+        else:
+            raise ValueError("Other data type slicing not supported here!")
+    return dict_slice
+
+
+def save_buffer(obs_data, mouse_pos, timestamp):
+    # include the target_pos calculated from the SCALE value
+    global action_obs_buffer
+
+    with data_lock:  # Thread safety
+        print(f"\n=== save_buffer called with timestamp {timestamp} ===")
+        print(f"obs_data keys: {list(obs_data.keys())}")
+        print(f"obs_data contents: {obs_data}")
+
+        # First check ALL required keys exist
+        required_keys = ['cur_keypoints', 'target_keypoints', 'agent_pos', 'intersection_ratio', 'reward', 'image']
+        missing_keys = []
+
+        for key in required_keys:
+            if key not in obs_data:
+                missing_keys.append(key)
+
+        # if missing_keys:
+        #     print(fMissing keys: {missing_keys} in obs_data, skipping save_buffer")
+        #     print(f"Available keys: {list(obs_data.keys())}")
+        #     return  # Don't save anything if data is incomplete
+
+        target_pos = [mouse_pos[0] / SCALE, mouse_pos[1] / SCALE]
+
+        for key in required_keys:
+            action_obs_buffer[key].append(obs_data[key])
+
+        action_obs_buffer["target_pos"].append(target_pos)
+        action_obs_buffer["timestamp"].append(timestamp)
+        print(f"Successfully saved buffer with timestamp {timestamp}")
+
+def save_received_action_obs_data():
+    global latest_action_receive_buffer
+    global action_obs_buffer
+    global data_collector
+
+    with data_lock:  # Thread safety
+        if action_obs_buffer and "timestamp" in action_obs_buffer:
+            if latest_action_receive_buffer["timestamp"]:
+                t_saved = []
+                for t in list(latest_action_receive_buffer["timestamp"]):  # Copy to avoid mutation
+                    if t not in action_obs_buffer["timestamp"]:
+                        print(action_obs_buffer["timestamp"])
+                        raise ValueError("saving for executed actions error, action not found in action_obs_buffer!\n" \
+                        "Try check the buffer size, and the command latency with the env for help")
+                    else:
+                        print(t)
+                        # print(action_obs_buffer["timestamp"])
+                        t_index = list(action_obs_buffer["timestamp"]).index(t)
+                        print(t_index)
+                        data_collector.record_timestep(get_dict_slice(action_obs_buffer, t_index))
+                        t_saved.append(t)
+                        # print("action and obs from real step is being saved")
+                for t in t_saved:
+                    latest_action_receive_buffer['timestamp'].remove(t)
+
 
 class SimpleT:
     def __init__(self, color, label):
@@ -249,9 +370,10 @@ action_frequency = 10
 
 print("Genesis Data Collector")
 print("SPACE: Start recording session")
-print("R: Force new episode") 
+# print("R: Force new episode") 
 print("S: Save and exit")
 print("ESC: Exit without saving")
+
 
 while running:
     current_time = time.time()
@@ -273,15 +395,22 @@ while running:
                     print("Recording cancelled")
                 elif recording_controller.state == 'RECORDING':
                     data_collector.finish_episode()
-                    recording_controller.state = 'WAITING'
-                    recording_controller.last_mouse_pos = current_mouse_pos
-                    print("Episode finished, waiting for next...")
-            elif event.key == K_r:
-                if recording_controller.state == 'RECORDING':
-                    data_collector.finish_episode()
-                    print("Forced episode finish")
-                recording_controller.state = 'RECORDING' 
-                print("Force started recording")
+                    print("Episode finished manually")
+                    print("Resetting environment...")
+                    if reset_environment():
+                        print("Environment reset successful")
+                    else:
+                        print("Environment reset failed")
+                    recording_controller.state = 'IDLE'
+                    recording_controller.last_mouse_pos = current_mouse_pos # change?
+                    action_sending = False
+                    print("Waiting for next episode...")
+            # elif event.key == K_r:
+            #     if recording_controller.state == 'RECORDING':
+            #         data_collector.finish_episode()
+            #         print("Forced episode finish")
+            #     recording_controller.state = 'RECORDING' 
+            #     print("Force started recording")
             elif event.key == K_s:
                 if recording_controller.state == 'RECORDING':
                     data_collector.finish_episode()
@@ -297,33 +426,40 @@ while running:
                     print("Save failed")
                 running = False
     
-    # Auto action sending
+    action_just_sent = False
     if action_sending and (current_time - last_action_time) > (1.0 / action_frequency):
-        action_x = max(0, min(1, current_mouse_pos[0] / SCALE))
-        action_y = max(0, min(1, current_mouse_pos[1] / SCALE))
-        threading.Thread(target=send_action, args=(action_x, action_y), daemon=True).start()
+        action_x = max(0, min(0.7, current_mouse_pos[0] / SCALE))
+        action_y = max(0, min(0.7, current_mouse_pos[1] / SCALE))
+        threading.Thread(target=send_action, args=(action_x, action_y, current_time), daemon=True).start()
         last_action_time = current_time
-    
-    # Recording logic
+        action_just_sent = True
+
+    # Recording the real action that is executed by the bot, aligned with control Hz.
     with data_lock:
         data = latest_data.copy()
-    
+
     if recording_controller.should_start_recording(current_mouse_pos):
         recording_controller.state = 'RECORDING'
         action_sending = True
         print("Auto-started recording")
-    
+
     if recording_controller.should_end_episode(data.get('intersection_ratio', 0)):
         data_collector.finish_episode()
-        recording_controller.state = 'WAITING'
-        recording_controller.last_mouse_pos = current_mouse_pos
-        action_sending = False
         print(f"Episode completed ({len(data_collector.episodes)} total)")
+        print("Resetting environment...")
+        if reset_environment():
+            print("Environment reset successful")
+        else:
+            print("Environment reset failed")
+        recording_controller.state = 'IDLE'
+        # recording_controller.last_mouse_pos = current_mouse_pos
+        action_sending = False
+
+    if recording_controller.state == 'RECORDING' and action_just_sent:
+        save_buffer(data, current_mouse_pos, current_time)
+        save_received_action_obs_data()
+
     
-    if recording_controller.state == 'RECORDING' and action_sending:
-        data_collector.record_timestep(data, current_mouse_pos)
-    
-    # Update display
     if "cur_keypoints" in data:
         t_current.update(data["cur_keypoints"])
     if "target_keypoints" in data:
@@ -336,10 +472,8 @@ while running:
     t_target.draw(screen)
     eef.draw(screen)
     
-    # Mouse cursor
     pygame.draw.circle(screen, YELLOW, current_mouse_pos, 8, 2)
     
-    # Status display
     status_lines = [
         f"State: {recording_controller.state}",
         f"Episodes: {len(data_collector.episodes)}",
@@ -348,7 +482,7 @@ while running:
         f"Action sending: {'ON' if action_sending else 'OFF'}",
         "",
         "SPACE: Start/Control recording",
-        "R: Force new episode", 
+        # "R: Force new episode", 
         "S: Save and exit"
     ]
     
@@ -357,7 +491,7 @@ while running:
         screen.blit(text, (10, 10 + i * 20))
     
     pygame.display.flip()
-    clock.tick(60)
+    clock.tick(30)
 
 pygame.quit()
 print("Data collection stopped.")

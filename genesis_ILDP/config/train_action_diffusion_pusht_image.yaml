@@ -85,7 +85,7 @@ task:
 # === TRAINING CONFIGURATION ===  
 training:
   seed: 42
-  device: cuda:0
+  device: mps:0
   num_epochs: 3000             # Standard training epochs
   batch_size: 64               # Batch size
   

@@ -101,6 +101,13 @@ class PushTImageRunner(BaseImageRunner):
         
         self._prepare_env()
         obs = self.env.reset() # return (parallel_envs_counts, obs_dict)
+
+        # Debug: print initial observation structure
+        print(f"Reset obs keys: {obs.keys()}")
+        for key, value in obs.items():
+            if hasattr(value, 'shape'):
+                print(f"Reset obs['{key}'].shape: {value.shape}")
+
         past_action = None
         # policy.reset()  # Reset states for stateful policy
         done = False
@@ -116,8 +123,12 @@ class PushTImageRunner(BaseImageRunner):
         try:
             while not done:
                 obs_dict = dict(obs)
-                
+
+                # Debug: print obs_dict structure before policy call
+                # print(f"Before policy - obs_dict keys: {obs_dict.keys()}")
+
                 if 'envs_idx' in obs_dict:
+                    # print(f"Removing envs_idx from obs_dict")
                     del obs_dict['envs_idx']
 
                 # Add past action if enabled, and note that the past action is counted according to the n_obs_steps number
@@ -129,12 +140,18 @@ class PushTImageRunner(BaseImageRunner):
                                             ].astype(np.float32)
 
                 with torch.no_grad():
+                    # Debug print to understand rollout input shapes
+                    # print(f"Rollout obs_dict shapes - image: {obs_dict['image'].shape}, agent_pos: {obs_dict['agent_pos'].shape}")
+
                     action_dict = policy.predict_action(obs_dict)
-                    
+
                 if isinstance(action_dict, dict):
                     action = action_dict['action']
                 else:
                     action = action_dict
+
+                # Debug print to understand rollout output shapes
+                # print(f"Rollout action shape: {action.shape}, expected batch size: {self.n_envs}")
 
                 obs, reward, done, info, env_status = self.env.step(action)
                 

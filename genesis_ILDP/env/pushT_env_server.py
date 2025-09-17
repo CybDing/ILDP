@@ -20,9 +20,9 @@ from genesis_ILDP.utils.cuda import *
 from genesis_ILDP.config.env_config import *
 from shapely.geometry import Polygon
 from genesis_ILDP.env.pushT_env import PushTEnv
-
+global reset_requested
 class PushTEnvServer(PushTEnv):
-    def __init__(self, render_size=(96, 96), xlim=0.3, ylim=0.3, seed=None, 
+    def __init__(self, render_size=(96, 96), xlim=0.1, ylim=0.1, seed=None, 
                  model_path=env_path, fps=30, show_fps=True):
         super().__init__(
             render_size=render_size, 
@@ -50,7 +50,7 @@ class PushTEnvServer(PushTEnv):
         
         data = {
             "timestamp": time.time(),
-            "env_id": 0,
+            # "env_id": 0,
             
             "cur_keypoints": self.keypoints['cur_keypoints'][0,:,:2].tolist(),
             
@@ -124,6 +124,7 @@ latest_action = {
     "received": False
 }
 action_lock = threading.Lock()
+reset_requested = False
 
 app = Flask(__name__)
 
@@ -142,7 +143,7 @@ def receive_action():
         if data and "action" in data:
             with action_lock:
                 latest_action["action"] = data["action"]
-                latest_action["timestamp"] = time.time()
+                latest_action["timestamp"] = data['timestamp']
                 latest_action["received"] = True
                 
             # print(f"Action received and stored: {data['action']}")
@@ -166,6 +167,26 @@ def get_status():
             "latest_action": latest_action,
             "server_time": time.time()
         }), 200
+    
+
+# @app.route('/api/received_action', methods=['POST'])
+# def publish_received_action(latest_action):
+#     return jsonify({
+#         # "action": latest_action["action"], # it is enough to use action for tracing back to its real action and obs
+#         "timestamp": latest_action["timestamp"]
+#     }, 200)
+
+
+@app.route('/api/reset', methods=['POST'])
+def reset_environment():
+    try:
+        # Reset the environment - this will be set by the main loop
+        global reset_requested
+        reset_requested = True
+        return jsonify({"status": "reset_requested", "timestamp": time.time()}), 200
+    except Exception as e:
+        print(f"Error in reset endpoint: {e}")
+        return jsonify({"error": str(e)}), 500
 
 def get_latest_action():
     with action_lock:
@@ -191,28 +212,51 @@ if __name__ == '__main__':
     env.start(n_envs=1, show_camera=False, show_interact_viewer=False, env_separate=False, seed=[0])
     env.seed(np.arange(1))
     env.reset()
-    
     action_count = 0
     
-    # env.start_recording()
-    for i in range(500):  
+    env.start_recording()
+    for i in range(10000):
+
+        current_time = time.time()
+        # Check if reset is requested
+        if reset_requested:
+            print("Reset requested, resetting environment...")
+            env.reset()
+            reset_requested = False
+            print("Environment reset completed")
+            action = get_latest_action() # eat up the last action 
+        # TODO change the logic of grasping the newest action into grasping 
+        # the newest action and also check if the action is enough new to be executed
         action = get_latest_action()
+
         if action is not None:
             action_count += 1
-            # 将action转换为torch tensor格式
-            action_tensor = torch.tensor([[*action, 0.25]], dtype=torch.float32)
+
+            # Notify client that this action was executed
+            try:
+                requests.post("http://localhost:6000/api/received_action",
+                             json={"timestamp": latest_action["timestamp"]},
+                             timeout=0.1)
+            except:
+                pass  # Don't block if client not available
+
+            action_tensor = torch.tensor([[*action, 0.2]], dtype=torch.float32)
             print(f"Step {i}: Executing action {action_count}: {action}")
             print(action_tensor)
             env.step(action=action_tensor)
         else:
-            # 如果没有action，就执行默认step
             env.step()
-        
+
+        # Control simulation speed for time alignment with control signal
         env._publish_keypoints()
-        
-        # 每50步打印一次状态
+        finishing_time = time.time()
+        executing_time = finishing_time - current_time
+        time_to_wait = 0.1 - executing_time
+
         if i % 50 == 0:
             print(f"Step {i}: Total actions received: {action_count}")
-             
 
-    #env.stop_recording()
+        if(time_to_wait > 0):
+            time.sleep(time_to_wait)
+               
+    env.stop_recording()

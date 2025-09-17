@@ -140,16 +140,28 @@ class ActionDiffusionImagePolicy(BaseImagePolicy):
         
         imgs = obs_dict['image']
         agent_pos = obs_dict['agent_pos']
+
+        # Debug print to understand input shapes during rollout
+        print(f"predict_action input shapes - imgs: {imgs.shape}, agent_pos: {agent_pos.shape}")
+
+        # Fix image dimension order if needed: [B, T, H, W, C] -> [B, T, C, H, W]
+        if len(imgs.shape) == 5 and imgs.shape[-1] == 3:
+            print(f"Converting image dimensions from {imgs.shape} to channels-first format")
+            imgs = imgs.permute(0, 1, 4, 2, 3)  # [B, T, H, W, C] -> [B, T, C, H, W]
+            print(f"After conversion: {imgs.shape}")
+
         batch_size = imgs.shape[0]
-        
+
         # Use DDPM for action generation
         action_pred = self.action_generation_ddpm(imgs, agent_pos, batch_size)
-        
+
         # Extract action steps for execution (typically the first n_action_steps)
         start = self.n_obs_steps - 1
         end = start + self.n_action_steps
         action = action_pred[:, start:end]
-        
+
+        print(f"predict_action output shapes - action: {action.shape}, action_pred: {action_pred.shape}")
+
         return {
             'action': action,
             'action_pred': action_pred
@@ -239,7 +251,7 @@ class ActionDiffusionImagePolicy(BaseImagePolicy):
         # Validate input shapes
         imgs_steps = imgs.shape[1]
         pos_steps = agent_pos.shape[1]
-        assert imgs_steps == pos_steps == self.obs_steps, f"Expected {self.obs_steps} obs steps, got imgs: {imgs_steps}, pos: {pos_steps}"
+        assert imgs_steps == pos_steps == self.n_obs_steps, f"Expected {self.n_obs_steps} obs steps, got imgs: {imgs_steps}, pos: {pos_steps}"
 
         # Prepare observation features
         imgs_batched = imgs.reshape(-1, *imgs.shape[2:])
@@ -251,7 +263,9 @@ class ActionDiffusionImagePolicy(BaseImagePolicy):
         pos_features = pos_features_batched.reshape(batch_size, self.n_obs_steps * 512)
 
         # Initialize with random noise
+        print(f"action_generation_ddpm: batch_size={batch_size}, traj_shape={self.traj_shape}")
         predicted_trajs = torch.randn(size=(batch_size, *self.traj_shape), device=imgs.device)
+        print(f"action_generation_ddpm: predicted_trajs initial shape={predicted_trajs.shape}")
 
         # Move scheduler tensors to the correct device
         betas_device = self.betas.to(imgs.device)

@@ -24,10 +24,10 @@ class PushTEnv(gym.Env):
     metadata = {"render.mode": ["rgb_array"], "video.frames_per_second": 10}
 
     def __init__(self,
-                 render_size=(500, 500),
-                 xlim=.3,
-                 ylim=.3,
-                 seed=None, # seed 
+                 render_size=(96, 96),
+                 xlim=.1,
+                 ylim=.1,
+                 seed=None, 
                  model_path=env_path,
                  fps = 30,
                  show_fps = True,
@@ -215,15 +215,14 @@ class PushTEnv(gym.Env):
         num_reset = envs_idx.shape[0]
         if num_reset == 0:
             return
-
-        # 使用list收集数据，最后转换为numpy再转torch
+    
         block_positions: List[List[float]] = []
         target_positions: List[List[float]] = []
         block_angles: List[float] = []
         target_angles: List[float] = []
         
         for env_idx in envs_idx:
-            env_idx_int = int(env_idx)  # 转为int用于numpy索引
+            env_idx_int = int(env_idx)  
             
             if hasattr(self, 'np_random_generators'):
                 rng = self.np_random_generators[env_idx_int]
@@ -238,7 +237,7 @@ class PushTEnv(gym.Env):
             
             target_x = rng.random() * self.block_lim['xlim'] + 0.2
             target_y = rng.random() * self.block_lim['ylim'] + 0.2
-            target_z = 0.0  # Marker at Ground level
+            target_z = 0.0  # Marker at Height=0 level
             
             target_angle = rng.random() * np.pi - np.pi / 2
         
@@ -247,11 +246,16 @@ class PushTEnv(gym.Env):
             block_angles.append(block_angle)
             target_angles.append(target_angle)
     
-        block_pos = to_torch(np.array(block_positions, dtype=np.float32))
-        target_pos = to_torch(np.array(target_positions, dtype=np.float32))
-        block_angle = to_torch(np.array(block_angles, dtype=np.float32).reshape(-1, 1))
-        target_angle = to_torch(np.array(target_angles, dtype=np.float32).reshape(-1, 1))
-        
+        # block_pos = to_torch(np.array(block_positions, dtype=np.float32))
+        # target_pos = to_torch(np.array(target_positions, dtype=np.float32))
+        # block_angle = to_torch(np.array(block_angles, dtype=np.float32).reshape(-1, 1))
+        # target_angle = to_torch(np.array(target_angles, dtype=np.float32).reshape(-1, 1))
+
+        block_pos = torch.tensor(block_positions, device=gs.device, dtype=torch.float32)
+        target_pos = torch.tensor(target_positions, device=gs.device, dtype=torch.float32)
+        block_angle = torch.tensor(block_angles, device=gs.device, dtype=torch.float32).reshape(-1, 1)
+        target_angle = torch.tensor(target_angles, device=gs.device, dtype=torch.float32).reshape(-1, 1)
+         
         # save initial dis and ang for reward calculation baseline
         self.ini_delta_dis = torch.linalg.norm(block_pos[:, :2] - target_pos[:, :2], axis=1, keepdims=False)
         self.ini_delta_ang = torch.abs(block_angle - target_angle)
@@ -271,30 +275,38 @@ class PushTEnv(gym.Env):
         ], axis=-1)
 
         # Debug: Store reset positions for environments 2 and 29
-        if hasattr(self, 'debug_reset_poses'):
-            self.debug_reset_poses.update({
-                int(env_idx): {
-                    'block_state': block_state_torch[i].cpu().numpy(),
-                    'target_state': target_state_torch[i].cpu().numpy()
-                } for i, env_idx in enumerate(envs_idx) if int(env_idx) in [2, 29]
-            })
-        else:
-            self.debug_reset_poses = {
-                int(env_idx): {
-                    'block_state': block_state_torch[i].cpu().numpy(),
-                    'target_state': target_state_torch[i].cpu().numpy()
-                } for i, env_idx in enumerate(envs_idx) if int(env_idx) in [2, 29]
-            }
+
+        # if hasattr(self, 'debug_reset_poses'):
+        #     self.debug_reset_poses.update({
+        #         int(env_idx): {
+        #             'block_state': block_state_torch[i].cpu().numpy(),
+        #             'target_state': target_state_torch[i].cpu().numpy()
+        #         } for i, env_idx in enumerate(envs_idx) if int(env_idx) in [2, 29]
+        #     })
+        # else:
+        #     self.debug_reset_poses = {
+        #         int(env_idx): {
+        #             'block_state': block_state_torch[i].cpu().numpy(),
+        #             'target_state': target_state_torch[i].cpu().numpy()
+        #         } for i, env_idx in enumerate(envs_idx) if int(env_idx) in [2, 29]
+        #     }
         
-        # home_pos = torch.zeros(size=(num_reset, len(self.robot_dofs_idx)), device=gs.device)
-        # print("current joint position:", self.robot.get_dofs_position(envs_idx=envs_idx))
         # home_pos_down = self._ikine(self.eef, 
-        #                             pos=torch.tensor([0.1, 0.1, 0.3]).repeat(num_reset, 1),
+        #                             pos=torch.tensor([0.1, 0.1, 0.2]).repeat(num_reset, 1),
         #                             quat=torch.tensor([0, 0, 1, 0]).repeat(num_reset, 1), 
         #                             envs_idx = envs_idx)[:, 0:7]
-        home_pos_down = torch.Tensor([[ 2.5060, -1.5572, -0.5973,  2.4180,  2.3973,  0.5915, -0.9210]])
+        
+        home_pos_down = torch.Tensor([[ 2.5060, -1.5572, -0.5973,  2.4180,  2.3973,  0.5915, -0.9210]]).repeat(self.n_envs, 1)
+        # The pose which is controlling the bot to the height of 0.3 meters(which is a bit height when the robot is set to 0.3 meters high)
+        
+        # home_pos_down = torch.tensor([-2.7925,  1.6561, -0.0733, -1.7983, -0.2336,  1.2497,  2.9667], device=gs.device, 
+        #                              dtype=torch.float32).repeat(self.n_envs, 1)
+        
+        # TODO add support to prevent intense configuration change to make contact with cube downward
+        # The pose which is able to control the bot into height of 0.2 meters, tested not good for home pose
+        
         # print("Predicted joint position:", home_pos_down)
-        # raise ValueError
+        # raise ValueError # used for print Predicted joint position not being hided from other messages 
     
         self.robot.set_dofs_position(
             position=home_pos_down,
@@ -331,18 +343,13 @@ class PushTEnv(gym.Env):
     def step(self, action: Optional[torch.Tensor] = None, 
              envs_idx: Optional[torch.Tensor] = None, 
              cal_all_keypoints: bool = False) -> Tuple[Dict[str, torch.Tensor], Union[float, np.ndarray], List[bool], Dict[str, torch.Tensor]]:
-        """execute actions
-        Args:
-            action: torch.Tensor (torch tensor for Genesis API)
-            envs_idx: torch.Tensor
-        """
+        
         # action: agent_pos(eef_pos) n_envs * action_x, action_y, action_z
         # a single action, multi steps for smooth pid control of the arm
-        # TODO check here
 
         if envs_idx is None:
             envs_idx = torch.arange(self.n_envs, device=gs.device, dtype=torch.int32)
-            # print(111)
+
         # print("envs_idx", envs_idx)
         n_steps = int(self.sim_hz // self.control_hz)
         if action is not None:
@@ -360,30 +367,30 @@ class PushTEnv(gym.Env):
             #        qpos_goal = qpos, 
             #        num_waypoints = n_steps
             #    )
+
         for _ in range(n_steps):
             self.scene.step()
+
         # for point in waypoints:
         #     self.robot.control_dofs_position(position=point[:, 0:7], # does not control tcp joints
         #                                 dofs_idx_local=self.robot_dofs_idx[0:7], 
         #                                 envs_idx=envs_idx
         #                                 )   
         #     self.scene.step()
-
         self._get_poses(envs_idx) # get Tpos, agent_pos
         self.calculate_all_keypoints()
 
-        print("eef pose: ", self.poses['agent_pos'][0,:2])
+        # print("eef pose: ", self.poses['agent_pos'][0,:2])
         # print("cube pose:", self.poses['cur_Tpose'][0,:])
 
-        ### JUDGE after sim steps, preventing misjudge the done condition
+        ### judge after one control action with n_steps numebr of sim steps, preventing misjudge the done condition
         observation = self._get_obs(rgb=True, envs_idx=envs_idx)
         info = self._get_info(envs_idx)
         
         done = [ratio > 0.95 for ratio in self._cal_intersection()]
         reward = self._cal_rewards()
 
-        return observation, reward, done, info
-    
+        return observation, reward, done, info    
     
     def render(self, mode='rgb_array'):
         assert mode == 'rgb_array'
@@ -400,14 +407,14 @@ class PushTEnv(gym.Env):
     def stop_recording(self, filename=None):
         # target_folder is configured in env_config
         os.makedirs(target_folder, exist_ok=True)
-        old_dir = os.getcwd()
-        os.chdir(target_folder)
+        # old_dir = os.getcwd()
+        # os.chdir(target_folder)
 
         if filename is None:
             filename = os.path.join(target_folder, time.strftime("%Y%m%d-%H-%M") + "-pushT-env.mp4")
         self.cam.stop_recording(save_to_filename=filename, fps=self.fps)
         
-        os.chdir(old_dir)
+        # os.chdir(old_dir)
 
     
     def calculate_all_keypoints(self) -> None:
@@ -444,7 +451,7 @@ class PushTEnv(gym.Env):
              [0.03, 0.1, 0], [-0.03, 0.1, 0]]
             for _ in range(self.n_envs)], device=gs.device)
 
-        # using row vector for saving the relative distance, so taking multiplication on the right side to
+        # Using row vector for saving the relative distance, so taking multiplication on the right side to
         # multiply with unit vectors.
         def Rz(angz):
             cos_z = torch.cos(angz)
@@ -515,13 +522,14 @@ class PushTEnv(gym.Env):
     
 
     def _cal_intersection(self) -> List[float]:
+
         if self.keypoints is None:
             return []
-            
+                    
         cur_points_np = to_numpy(self.keypoints['cur_keypoints'][:, :, :2])
         target_points_np = to_numpy(self.keypoints['target_keypoints'][:, :, :2])
-        print(cur_points_np)
-        print(target_points_np)
+        # print(cur_points_np)
+        # print(target_points_np)
         ratio: List[float] = []
         for i in range(cur_points_np.shape[0]):
             try:
@@ -534,61 +542,50 @@ class PushTEnv(gym.Env):
                     ratio.append(0.0)
                     continue
 
-                # Check for duplicate/collinear points
-                unique_cur = np.unique(cur_points, axis=0)
-                unique_tar = np.unique(tar_points, axis=0)
+                # # Check for duplicate/collinear points
+                # unique_cur = np.unique(cur_points, axis=0)
+                # unique_tar = np.unique(tar_points, axis=0)
 
-                if len(unique_cur) < 3 or len(unique_tar) < 3:
-                    print(f"Env {i}: Not enough unique points")
-                    ratio.append(0.0)
-                    continue
+                # if len(unique_cur) < 3 or len(unique_tar) < 3:
+                #     print(f"Env {i}: Not enough unique points")
+                #     ratio.append(0.0)
+                #     continue
 
                 cur_polygon = Polygon(cur_points)
                 tar_polygon = Polygon(tar_points)
 
-                if not cur_polygon.is_valid or not tar_polygon.is_valid:
-                    print(f"Env {i}: Invalid polygon")
-                    ratio.append(0.0)
-                    continue
+                # if not cur_polygon.is_valid or not tar_polygon.is_valid:
+                #     print(f"Env {i}: Invalid polygon")
+                #     ratio.append(0.0)
+                #     continue
 
                 intersection_geom = cur_polygon.intersection(tar_polygon)
                 area = intersection_geom.area
                 ratio.append(area / cur_polygon.area if cur_polygon.area > 0 else 0.0)
 
             except Exception as e:
-                print(f"Env {i}: Polygon error - {e}")
-                ratio.append(0.0)
-        print(ratio)
+                raise ValueError(f"Env {i}: Polygon error - {e}")
+                
+        # print(ratio)
         return ratio
 
     def _get_poses(self, envs_idx: torch.Tensor) -> None:
-        """获取cube、target和agent的位姿
-        Args:
-            envs_idx: torch.Tensor - 环境索引 (GPU tensor for Genesis API)
-        """
 
-        # 从Genesis API获取torch tensors
         cur_Tpose_torch = self.cube.get_dofs_position(self.cube_dofs_idx, envs_idx)
         target_Tpose_torch = self.plane.get_dofs_position(self.marker_dofs_idx, envs_idx)
         agent_pos_torch = self.robot.get_links_pos(self.eef_idx, envs_idx)[:, 0, :2]
         
         self.poses = {
-            'cur_Tpose': cur_Tpose_torch,      # torch tensor from Genesis
-            'target_Tpose': target_Tpose_torch, # torch tensor from Genesis  
-            'agent_pos': agent_pos_torch        # torch tensor from Genesis
+            'cur_Tpose': cur_Tpose_torch,      # torch tensor in gs.device
+            'target_Tpose': target_Tpose_torch, # torch tensor in gs.device
+            'agent_pos': agent_pos_torch        # torch tensor in gs.device
         }
 
 
     def _get_obs(self, rgb: bool = True, depth: bool = False, 
                  segmentation: bool = False, normal: bool = False, 
                  envs_idx: Optional[torch.Tensor] = None) -> Dict[str, torch.Tensor]:
-        """
-        Args:
-            envs_idx: torch.Tensor
-        Returns:
-            Dict with torch tensors
-        """
-
+        
         if envs_idx is None:
             envs_idx = torch.arange(self.n_envs, device=gs.device, dtype=torch.int32)
         elif not isinstance(envs_idx, torch.Tensor):
@@ -610,10 +607,6 @@ class PushTEnv(gym.Env):
         return obs
     
     def _get_info(self, envs_idx: Optional[torch.Tensor] = None) -> Dict[str, torch.Tensor]:
-        """获取信息字典
-        Args:
-            envs_idx: torch.Tensor - 环境索引 (GPU tensor)
-        """
         if envs_idx is None:
             envs_idx = torch.arange(self.n_envs, device=gs.device, dtype=torch.int32)
         elif not isinstance(envs_idx, torch.Tensor):
@@ -629,18 +622,26 @@ class PushTEnv(gym.Env):
 
 if __name__ == '__main__':
     env = PushTEnv()
-    env.start(n_envs=1, show_camera=False, show_interact_viewer=False, 
-              env_separate=True, seed=[0])
+    env.start(n_envs=1, show_camera=False, show_interact_viewer=True, 
+              env_separate=False, seed=[0])
     env.seed([5004])
     env.reset()
+    current_time = time.time()
 
     env.start_recording()
     for i in range(500):
-        env.step(action=torch.tensor([[0.3, 0.3, 0.3]]))
-        if i % 10 == 0: 
+        current_time = time.time()
+        env.step(action=torch.tensor([[0.1, 0.1, 0.3]]))
+        finishing_time = time.time()
+        executing_time = finishing_time - current_time
+
+        time_to_wait = 0.1 - executing_time
+        if(time_to_wait > 0):
+            time.sleep(time_to_wait)
+        # if i % 10 == 0: 
             # env.reset()
             # print(env.calculate_all_keypoints())
-            print(np.shape(env.render()[0]))
+            # print(np.shape(env.render()[0]))
             # print(env._cal_intersection())
             # print(env.get_key_points())
 
