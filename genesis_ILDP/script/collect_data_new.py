@@ -15,7 +15,7 @@ from typing import Deque, Union
 from diffusion_policy.common.replay_buffer import ReplayBuffer
 
 pygame.init()
-width, height = 800, 800 # 最远距离 0.4 m
+width, height = 800, 800 # 视野内最远距离为 0.65 m 实际执行范围基本在0.3-0.5m内
 screen = pygame.display.set_mode((width, height))
 clock = pygame.time.Clock()
 font = pygame.font.SysFont('Arial', 16)
@@ -26,12 +26,12 @@ GREEN = (50, 255, 50)
 BLUE = (50, 50, 255)
 BLACK = (0, 0, 0)
 YELLOW = (255, 255, 0)
-SCALE = 1000
+SCALE = 1200
 
 latest_data = {
     "cur_keypoints": [],
     "target_keypoints": [],
-    "agent_pos": [0.1, 0.1],
+    "agent_pos": [-0.5, 0.5],
     "intersection_ratio": 0.0,
     "reward": 0.0,
     "image": None
@@ -62,7 +62,7 @@ class DataCollector:
     def __init__(self):
         self.episodes = []
         self.current_episode = []
-        self.last_agent_pos = np.array([0.3, 0.3])
+        self.last_agent_pos = np.array([-0.4, 0.4])
         
     def decode_image(self, img_data):
         if not img_data or img_data.get('format') != 'jpeg_base64':
@@ -85,11 +85,12 @@ class DataCollector:
             return False
         
         # check if the tensor here should be which dimensional(commonly to be 2 dim)
-        current_agent_pos = np.array(obs_data.get('agent_pos', [0.1, 0.1])[:2], dtype=np.float32)
-        target_pos = np.array(obs_data.get('target_pos', [0.1, 0.1])[:2], dtype=np.float32)
+        current_agent_pos = np.array(obs_data.get('agent_pos', [-0.4, 0.4])[:2], dtype=np.float32)
+        target_pos = np.array(obs_data.get('target_pos', [-0.4, 0.4])[:2], dtype=np.float32)
         
-        action = target_pos - self.last_agent_pos
-        
+        # action = target_pos - self.last_agent_pos
+        action = target_pos
+
         # Combined state (compatible with original dataset from diffusion_policy)
         state = np.concatenate([
             current_agent_pos, 
@@ -256,9 +257,9 @@ def get_dict_slice(dictionary, index):
     assert isinstance(dictionary, dict)
     for key in dictionary.keys():
         if isinstance(dictionary[key], Union[list, Deque]):
-            print(key)
-            print(index)
-            print(len(dictionary[key]))
+            # print(key)
+            # print(index)
+            # print(len(dictionary[key]))
             dict_slice[key] = dictionary[key][index]
         else:
             raise ValueError("Other data type slicing not supported here!")
@@ -287,7 +288,7 @@ def save_buffer(obs_data, mouse_pos, timestamp):
         #     print(f"Available keys: {list(obs_data.keys())}")
         #     return  # Don't save anything if data is incomplete
 
-        target_pos = [mouse_pos[0] / SCALE, mouse_pos[1] / SCALE]
+        target_pos = [-mouse_pos[0] / SCALE, mouse_pos[1] / SCALE]
 
         for key in required_keys:
             action_obs_buffer[key].append(obs_data[key])
@@ -330,7 +331,7 @@ class SimpleT:
         
     def update(self, keypoints):
         if len(keypoints) >= 8:
-            self.points = [(p[0] * SCALE, p[1] * SCALE) for p in keypoints]
+            self.points = [(-p[0] * SCALE, p[1] * SCALE) for p in keypoints]
     
     def draw(self, surface):
         if len(self.points) < 8:
@@ -349,7 +350,7 @@ class SimpleEEF:
         
     def update(self, agent_pos):
         if len(agent_pos) >= 2:
-            self.pos = (agent_pos[0] * SCALE, agent_pos[1] * SCALE)
+            self.pos = (-agent_pos[0] * SCALE, agent_pos[1] * SCALE)
     
     def draw(self, surface):
         x, y = int(self.pos[0]), int(self.pos[1])
@@ -428,7 +429,7 @@ while running:
     
     action_just_sent = False
     if action_sending and (current_time - last_action_time) > (1.0 / action_frequency):
-        action_x = max(0, min(0.7, current_mouse_pos[0] / SCALE))
+        action_x = min(0, max(-0.7, -current_mouse_pos[0] / SCALE))
         action_y = max(0, min(0.7, current_mouse_pos[1] / SCALE))
         threading.Thread(target=send_action, args=(action_x, action_y, current_time), daemon=True).start()
         last_action_time = current_time

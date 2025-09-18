@@ -42,6 +42,7 @@ def create_indices(episode_ends, sequence_length, episode_mask, pad_before, pad_
             else:
                 sample_end_idx = sequence_length - 1
                 buffer_end_idx = buffer_start_idx + sample_end_idx - sample_start_idx
+            cur_start_idx = cur_start_idx + 1
 
             indices.append((buffer_start_idx, buffer_end_idx, sample_start_idx, sample_end_idx))
 
@@ -68,7 +69,7 @@ class SequenceSampler:
 
     def indices_gen(self):
         episode_ends = self.replay_buffer.episode_ends[:]
-
+        print("episode_counts", len(episode_ends))
         indices = create_indices(
             episode_ends=episode_ends,
             sequence_length=self.horizon,
@@ -80,6 +81,7 @@ class SequenceSampler:
 
     def sample_sequence(self, idx):
         buffer_start_idx, buffer_end_idx, sample_start_idx, sample_end_idx = self.indices[idx]
+        # print("buffer_start_idx, buffer_end_idx, sample_start_idx, sample_end_idx", buffer_start_idx, buffer_end_idx, sample_start_idx, sample_end_idx)
 
         result = dict()
         for key in self.replay_buffer.keys():

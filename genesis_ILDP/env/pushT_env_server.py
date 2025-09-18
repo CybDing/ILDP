@@ -132,13 +132,13 @@ app = Flask(__name__)
 def receive_action():
     global latest_action
     
-    print(f"Received request: {request.method} {request.url}")
-    print(f"Content-Type: {request.content_type}")
-    print(f"Raw data: {request.get_data()}")
+    # print(f"Received request: {request.method} {request.url}")
+    # print(f"Content-Type: {request.content_type}")
+    # print(f"Raw data: {request.get_data()}")
     
     try:
         data = request.get_json()
-        print(f"Parsed JSON data: {data}")
+        # print(f"Parsed JSON data: {data}")
         
         if data and "action" in data:
             with action_lock:
@@ -240,7 +240,7 @@ if __name__ == '__main__':
             except:
                 pass  # Don't block if client not available
 
-            action_tensor = torch.tensor([[*action, 0.2]], dtype=torch.float32)
+            action_tensor = torch.tensor([[*action, 0.27]], dtype=torch.float32)
             print(f"Step {i}: Executing action {action_count}: {action}")
             print(action_tensor)
             env.step(action=action_tensor)

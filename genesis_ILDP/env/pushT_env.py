@@ -29,7 +29,7 @@ class PushTEnv(gym.Env):
                  ylim=.1,
                  seed=None, 
                  model_path=env_path,
-                 fps = 30,
+                 fps = 100,
                  show_fps = True,
                  ):
 
@@ -48,13 +48,12 @@ class PushTEnv(gym.Env):
         self.show_fps = show_fps
         self.device = None
 
-        # 环境状态变量 (numpy arrays for computation)
         self.ini_delta_dis: Union[float, np.ndarray] = 0.0
         self.ini_delta_ang: Union[float, np.ndarray] = 0.0 
         self.reward0: Optional[float] = None
-        self.poses: Optional[Dict[str, torch.Tensor]] = None  # torch tensors from Genesis API
-        self.keypoints: Optional[Dict[str, np.ndarray]] = None  # numpy arrays for computation
-
+        self.poses: Optional[Dict[str, torch.Tensor]] = None  
+        self.keypoints: Optional[Dict[str, np.ndarray]] = None
+        
         self.observation_space = spaces.Dict({
             'images': spaces.Box(
                 low=0.,
@@ -158,9 +157,9 @@ class PushTEnv(gym.Env):
 
         self.cam = self.scene.add_camera(
             res=self.render_size,
-            pos=(0.85, 0.85, 1.2),
-            lookat=(0.3, 0.3, 0.0),
-            fov=60,
+            pos=(0, 0.3, 1.3),
+            lookat=(-0.4, 0.4, 0),
+            fov=65,
             GUI=show_camera,
         )
         
@@ -208,7 +207,7 @@ class PushTEnv(gym.Env):
     def reset_idx(self, envs_idx: torch.Tensor) -> Dict[str, torch.Tensor]:
         """
         Args:
-            envs_idx: torch.Tensor - 需要重置的环境索引 (GPU tensor for Genesis API)
+            envs_idx: torch.Tensor
         Returns:
             observation: Dict with torch tensors
         """
@@ -229,14 +228,14 @@ class PushTEnv(gym.Env):
             else:
                 raise ValueError("ENV-LEVEL seeds have not been defined!")
             
-            block_x = rng.random() * self.block_lim['xlim'] + 0.2
-            block_y = rng.random() * self.block_lim['ylim'] + 0.2
-            block_z = 0.07  # Fixed Height
+            block_x = rng.random() * self.block_lim['xlim'] - 0.35
+            block_y = rng.random() * self.block_lim['ylim'] + 0.35
+            block_z = 0.06  # Fixed Height
             
             block_angle = rng.random() * np.pi / 2
             
-            target_x = rng.random() * self.block_lim['xlim'] + 0.2
-            target_y = rng.random() * self.block_lim['ylim'] + 0.2
+            target_x = rng.random() * self.block_lim['xlim'] - 0.35
+            target_y = rng.random() * self.block_lim['ylim'] + 0.35
             target_z = 0.0  # Marker at Height=0 level
             
             target_angle = rng.random() * np.pi - np.pi / 2
@@ -292,16 +291,18 @@ class PushTEnv(gym.Env):
         #     }
         
         # home_pos_down = self._ikine(self.eef, 
-        #                             pos=torch.tensor([0.1, 0.1, 0.2]).repeat(num_reset, 1),
+        #                             pos=torch.tensor([-0.35, 0.35, 0.3]).repeat(num_reset, 1),
         #                             quat=torch.tensor([0, 0, 1, 0]).repeat(num_reset, 1), 
         #                             envs_idx = envs_idx)[:, 0:7]
-        
-        home_pos_down = torch.Tensor([[ 2.5060, -1.5572, -0.5973,  2.4180,  2.3973,  0.5915, -0.9210]]).repeat(self.n_envs, 1)
+        # print(home_pos_down)
+        home_pos_down = torch.tensor([-0.4602,  1.3013,  2.5882,  1.1296,  0.7087,  0.6787,  1.2742], device=gs.device).repeat(self.n_envs, 1)
+        # home_pos_down = torch.tensor([-0.3794,  1.3189,  2.6545,  1.5788,  1.0798,  1.0309,  0.8671]).repeat(self.n_envs, 1)
+
+        # home_pos_down = torch.Tensor([[ 2.5060, -1.5572, -0.5973,  2.4180,  2.3973,  0.5915, -0.9210]]).repeat(self.n_envs, 1)
         # The pose which is controlling the bot to the height of 0.3 meters(which is a bit height when the robot is set to 0.3 meters high)
         
         # home_pos_down = torch.tensor([-2.7925,  1.6561, -0.0733, -1.7983, -0.2336,  1.2497,  2.9667], device=gs.device, 
         #                              dtype=torch.float32).repeat(self.n_envs, 1)
-        
         # TODO add support to prevent intense configuration change to make contact with cube downward
         # The pose which is able to control the bot into height of 0.2 meters, tested not good for home pose
         
@@ -330,9 +331,7 @@ class PushTEnv(gym.Env):
             dofs_idx_local=self.robot_dofs_idx[0:7],
             envs_idx=envs_idx
         ) # stablize initial pos(preventing falling down mistakenly)
-
-        # TODO control eef to close(1)
-        
+     
         observation = self._get_obs(rgb=True, envs_idx=envs_idx)
         return observation
     
@@ -340,6 +339,7 @@ class PushTEnv(gym.Env):
         envs_idx_torch = torch.arange(self.n_envs, device=gs.device, dtype=torch.int32)
         return self.reset_idx(envs_idx=envs_idx_torch)
         
+
     def step(self, action: Optional[torch.Tensor] = None, 
              envs_idx: Optional[torch.Tensor] = None, 
              cal_all_keypoints: bool = False) -> Tuple[Dict[str, torch.Tensor], Union[float, np.ndarray], List[bool], Dict[str, torch.Tensor]]:
@@ -359,17 +359,25 @@ class PushTEnv(gym.Env):
             else: 
                quat = torch.tile(torch.tensor([0, 0, 1, 0], device=self.device), (len(envs_idx), 1))
                qpos = self._ikine(self.eef, action, quat, envs_idx)
+               print(qpos)
             self.robot.control_dofs_position(position=qpos[:, 0:7], # does not control tcp joints
                                         dofs_idx_local=self.robot_dofs_idx[0:7], 
                                         envs_idx=envs_idx
-                                        )   
-            #    waypoints = self.robot.plan_path(
+                                        )
+            self.robot.set_dofs_position(position=torch.zeros(self.n_envs, len(self.robot_dofs_idx) - 7),
+                                        dofs_idx_local=self.robot_dofs_idx[7:], 
+                                        envs_idx=envs_idx,
+                                        )      
+            # make sure the action predicted is smooth, no need for using plan for executing the action sequence
+            # waypoints = self.robot.plan_path(
             #        qpos_goal = qpos, 
             #        num_waypoints = n_steps
-            #    )
+            # )
 
         for _ in range(n_steps):
             self.scene.step()
+            observation = self._get_obs(rgb=True, envs_idx=envs_idx) # render per simulation step(could render less according to 
+            # required video fps)
 
         # for point in waypoints:
         #     self.robot.control_dofs_position(position=point[:, 0:7], # does not control tcp joints
@@ -384,7 +392,7 @@ class PushTEnv(gym.Env):
         # print("cube pose:", self.poses['cur_Tpose'][0,:])
 
         ### judge after one control action with n_steps numebr of sim steps, preventing misjudge the done condition
-        observation = self._get_obs(rgb=True, envs_idx=envs_idx)
+        # observation = self._get_obs(rgb=True, envs_idx=envs_idx)
         info = self._get_info(envs_idx)
         
         done = [ratio > 0.95 for ratio in self._cal_intersection()]
@@ -416,7 +424,7 @@ class PushTEnv(gym.Env):
         
         # os.chdir(old_dir)
 
-    
+
     def calculate_all_keypoints(self) -> None:
         # dis_ori = R_z * R_y * R_x * dis_direct
 
@@ -624,14 +632,15 @@ if __name__ == '__main__':
     env = PushTEnv()
     env.start(n_envs=1, show_camera=False, show_interact_viewer=True, 
               env_separate=False, seed=[0])
-    env.seed([5004])
+    env.seed([12])
     env.reset()
     current_time = time.time()
 
-    env.start_recording()
-    for i in range(500):
+    # env.start_recording()
+    for i in range(50):
         current_time = time.time()
-        env.step(action=torch.tensor([[0.1, 0.1, 0.3]]))
+        env.step(action=torch.tensor([[-0.5, 0.5, 0.3]]))
+        # env.step()
         finishing_time = time.time()
         executing_time = finishing_time - current_time
 
@@ -645,4 +654,4 @@ if __name__ == '__main__':
             # print(env._cal_intersection())
             # print(env.get_key_points())
 
-    env.stop_recording()
+    # env.stop_recording()

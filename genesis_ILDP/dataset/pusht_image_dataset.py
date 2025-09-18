@@ -96,10 +96,15 @@ class PushTImageDataset(BaseImageDataset):
 
 def test():
     import os
-    zarr_path = '../data/train_data/pusht/pusht_cchi_v7_replay.zarr'
+    # zarr_path = '../data/train_data/pusht/pusht_cchi_v7_replay.zarr'
+    zarr_path = '../data/train_data/pusht/pusht_test_0919.zarr'
     dataset = PushTImageDataset(zarr_path, horizon=16)
     print("Total sequences stored in Replay buffer: ", len(dataset))
-    # print(dataset.__getitem__(10)['action'][1])
+    print(len(dataset.__getitem__(10)['obs']['agent_pos']))
+    print(len(dataset.__getitem__(10)['action']))
+
+    print("action sequence:  ", dataset.__getitem__(0)['action'])
+    print("agent_pos sequence:  ", dataset.__getitem__(0)['obs']['agent_pos'])
     # print(dataset.replay_buffer.root)
     # from matplotlib import pyplot as plt
     # normalizer = dataset.get_normalizer()
