@@ -17,33 +17,43 @@ from diffusion_policy.diffusion_policy.common.sampler import get_val_mask, downs
 
 def create_indices(episode_ends, sequence_length, episode_mask, pad_before, pad_after):
     indices = []
+    # print(episode_ends[-1])
     for episode_idx in range(len(episode_ends)):
         if episode_mask[episode_idx] == 0: continue;
         else:
             if episode_idx == 0: start_idx = 0
-            else: start_idx = episode_ends[episode_idx - 1] +  1
-            end_idx = episode_ends[episode_idx]
+            else: start_idx = episode_ends[episode_idx - 1]
+            end_idx = episode_ends[episode_idx] - 1 # exclude the start of next episode
 
-        seq_counts = end_idx - start_idx + pad_before + pad_after - sequence_length + 1
+        seq_counts = end_idx - start_idx + pad_before + pad_after - sequence_length + 2
         if seq_counts <= 0: continue
         cur_start_idx = -pad_before
+        # print(cur_start_idx)
         for _ in range(seq_counts):
             if cur_start_idx < 0: 
                 sample_start_idx = -cur_start_idx
                 buffer_start_idx = start_idx
+                cur_end_idx = buffer_start_idx + sequence_length - 1 + cur_start_idx
             else:
                 sample_start_idx = 0
                 buffer_start_idx = start_idx + cur_start_idx
+                cur_end_idx = buffer_start_idx + sequence_length - 1
+                # print("buffer start_idx, cur_end_idx", buffer_start_idx, cur_end_idx)
             
-            cur_end_idx = cur_start_idx + sequence_length - 1
-            if cur_end_idx > end_idx:
+            # cur_end_idx = buffer_start_idx + sequence_length - 1
+            if cur_end_idx > end_idx and (cur_end_idx - end_idx) <= pad_after:
                 sample_end_idx = sequence_length - (cur_end_idx - end_idx) - 1
                 buffer_end_idx = end_idx
-            else:
+            elif cur_end_idx <= end_idx:
                 sample_end_idx = sequence_length - 1
-                buffer_end_idx = buffer_start_idx + sample_end_idx - sample_start_idx
+                buffer_end_idx = cur_end_idx
+
             cur_start_idx = cur_start_idx + 1
 
+            if (buffer_end_idx - buffer_start_idx) != (sample_end_idx - sample_start_idx) or \
+            buffer_end_idx > episode_ends[-1] - 1:
+                raise ValueError(buffer_start_idx, buffer_end_idx, sample_start_idx, sample_end_idx)
+            
             indices.append((buffer_start_idx, buffer_end_idx, sample_start_idx, sample_end_idx))
 
     return indices
@@ -69,7 +79,7 @@ class SequenceSampler:
 
     def indices_gen(self):
         episode_ends = self.replay_buffer.episode_ends[:]
-        print("episode_counts", len(episode_ends))
+        print("episode_counts", episode_ends)
         indices = create_indices(
             episode_ends=episode_ends,
             sequence_length=self.horizon,
@@ -87,15 +97,20 @@ class SequenceSampler:
         for key in self.replay_buffer.keys():
             input_arr = self.replay_buffer[key]
             sample = input_arr[buffer_start_idx : buffer_end_idx + 1]
+           # print(input_arr.shape)
 
             # Handle padding if needed
             if (sample_start_idx > 0) or (sample_end_idx < self.horizon):
                 data = np.zeros((self.horizon,) + input_arr.shape[1:], dtype=input_arr.dtype)
                 if sample_start_idx > 0:
-                    data[:sample_start_idx] = sample[0]  
+                     data[:sample_start_idx] = sample[0]  
                 if sample_end_idx < self.horizon:
                     data[sample_end_idx:] = sample[-1]  
-                data[sample_start_idx:sample_end_idx + 1] = sample
+                # print(sample_start_idx, sample_end_idx, buffer_start_idx, buffer_end_idx, sample.shape)
+                try:
+                    data[sample_start_idx:sample_end_idx + 1] = sample
+                except:
+                    raise ValueError(sample_start_idx, sample_end_idx, buffer_start_idx, buffer_end_idx)
             else:
                 data = sample
 

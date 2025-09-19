@@ -29,7 +29,7 @@ class PushTEnv(gym.Env):
                  ylim=.1,
                  seed=None, 
                  model_path=env_path,
-                 fps = 100,
+                 fps = 30,
                  show_fps = True,
                  ):
 
@@ -93,7 +93,7 @@ class PushTEnv(gym.Env):
             show_FPS=True,
             sim_options=gs.options.SimOptions(dt=1./self.sim_hz, substeps=1),
             viewer_options=gs.options.ViewerOptions(
-                max_FPS=40,
+                max_FPS=30,
                 camera_pos=(2, 2, 1.5),
                 camera_lookat=(0.3, 0.3, 0.3),
                 camera_fov=40 # angle look at
@@ -373,11 +373,12 @@ class PushTEnv(gym.Env):
             #        qpos_goal = qpos, 
             #        num_waypoints = n_steps
             # )
-
+        steps = 0
         for _ in range(n_steps):
             self.scene.step()
-            observation = self._get_obs(rgb=True, envs_idx=envs_idx) # render per simulation step(could render less according to 
-            # required video fps)
+            steps = steps + 1
+            if steps % 4 == 0: # make sure that the frames being rendered is at about 30 fps 
+                observation = self._get_obs(rgb=True, envs_idx=envs_idx) # render less for faster simulation 
 
         # for point in waypoints:
         #     self.robot.control_dofs_position(position=point[:, 0:7], # does not control tcp joints
@@ -636,7 +637,7 @@ if __name__ == '__main__':
     env.reset()
     current_time = time.time()
 
-    # env.start_recording()
+    env.start_recording()
     for i in range(50):
         current_time = time.time()
         env.step(action=torch.tensor([[-0.5, 0.5, 0.3]]))
@@ -654,4 +655,4 @@ if __name__ == '__main__':
             # print(env._cal_intersection())
             # print(env.get_key_points())
 
-    # env.stop_recording()
+    env.stop_recording()

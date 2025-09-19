@@ -23,7 +23,7 @@ from genesis_ILDP.env.pushT_env import PushTEnv
 global reset_requested
 class PushTEnvServer(PushTEnv):
     def __init__(self, render_size=(96, 96), xlim=0.1, ylim=0.1, seed=None, 
-                 model_path=env_path, fps=30, show_fps=True):
+                 model_path=env_path, fps=40, show_fps=True):
         super().__init__(
             render_size=render_size, 
             xlim=xlim, 
@@ -214,8 +214,8 @@ if __name__ == '__main__':
     env.reset()
     action_count = 0
     
-    env.start_recording()
-    for i in range(10000):
+    # env.start_recording()
+    for i in range(100000):
 
         current_time = time.time()
         # Check if reset is requested
@@ -259,4 +259,4 @@ if __name__ == '__main__':
         if(time_to_wait > 0):
             time.sleep(time_to_wait)
                
-    env.stop_recording()
+    # env.stop_recording()

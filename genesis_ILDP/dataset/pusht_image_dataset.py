@@ -17,8 +17,8 @@ class PushTImageDataset(BaseImageDataset):
     def __init__(self,
             zarr_path, 
             horizon=1,
-            pad_before=0,
-            pad_after=0,
+            pad_before=1,
+            pad_after=7,
             seed=42,
             val_ratio=0.0,
             max_train_episodes=None
@@ -96,8 +96,10 @@ class PushTImageDataset(BaseImageDataset):
 
 def test():
     import os
-    # zarr_path = '../data/train_data/pusht/pusht_cchi_v7_replay.zarr'
-    zarr_path = '../data/train_data/pusht/pusht_test_0919.zarr'
+    import sys
+
+    zarr_path = '../data/train_data/pusht/pusht_test_0919_2.zarr'
+    zarr_path = '../data/train_data/pusht/pusht_cchi_v7_replay.zarr'
     dataset = PushTImageDataset(zarr_path, horizon=16)
     print("Total sequences stored in Replay buffer: ", len(dataset))
     print(len(dataset.__getitem__(10)['obs']['agent_pos']))
@@ -105,6 +107,11 @@ def test():
 
     print("action sequence:  ", dataset.__getitem__(0)['action'])
     print("agent_pos sequence:  ", dataset.__getitem__(0)['obs']['agent_pos'])
+    print("imgs dim: ", dataset.__getitem__(0)['obs']['image'].shape)
+    normalizer = dataset.get_normalizer(mode='limits')
+
+    print("normalizer stat: \n", normalizer.get_input_stats()['action'], normalizer.get_output_stats())
+
     # print(dataset.replay_buffer.root)
     # from matplotlib import pyplot as plt
     # normalizer = dataset.get_normalizer()

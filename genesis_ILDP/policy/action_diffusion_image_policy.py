@@ -301,7 +301,17 @@ class ActionDiffusionImagePolicy(BaseImagePolicy):
         action_dict = {"action": predicted_trajs}
         action_unnormalized = self.normalizer.unnormalize(action_dict)
         predicted_trajs_unnormalized = action_unnormalized["action"]
-        return predicted_trajs_unnormalized
+        
+        # Add constant dimension (0.27) to the end
+        # predicted_trajs_unnormalized shape: (batch_size, horizon, action_dim)
+        batch_size, horizon, action_dim = predicted_trajs_unnormalized.shape
+        const_dim = torch.full((batch_size, horizon, 1), 0.27, 
+                              device=predicted_trajs_unnormalized.device, 
+                              dtype=predicted_trajs_unnormalized.dtype)
+        predicted_trajs_with_const = torch.cat([predicted_trajs_unnormalized, const_dim], dim=-1)
+        
+        print(f"Added constant dimension: {predicted_trajs_unnormalized.shape} -> {predicted_trajs_with_const.shape}")
+        return predicted_trajs_with_const
     
     def action_generation_ddim(self, imgs, agent_pos, batch_size, sample_steps=None, noise_intensity=0.0):
         """DDIM sampling for faster action generation."""
@@ -351,4 +361,14 @@ class ActionDiffusionImagePolicy(BaseImagePolicy):
         action_dict = {"action": predicted_trajs}
         action_unnormalized = self.normalizer.unnormalize(action_dict)
         predicted_trajs_unnormalized = action_unnormalized["action"]
-        return predicted_trajs_unnormalized
+        
+        # Add constant dimension (0.27) to the end
+        # predicted_trajs_unnormalized shape: (batch_size, horizon, action_dim)
+        batch_size, horizon, action_dim = predicted_trajs_unnormalized.shape
+        const_dim = torch.full((batch_size, horizon, 1), 0.27, 
+                              device=predicted_trajs_unnormalized.device, 
+                              dtype=predicted_trajs_unnormalized.dtype)
+        predicted_trajs_with_const = torch.cat([predicted_trajs_unnormalized, const_dim], dim=-1)
+        
+        print(f"Added constant dimension: {predicted_trajs_unnormalized.shape} -> {predicted_trajs_with_const.shape}")
+        return predicted_trajs_with_const

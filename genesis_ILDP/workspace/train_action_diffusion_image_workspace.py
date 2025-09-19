@@ -193,8 +193,17 @@ class TrainActionDiffusionImageWorkspace(BaseWorkspace):
                 with tqdm.tqdm(train_dataloader, desc=f"Training epoch {self.epoch}", 
                         leave=False, mininterval=cfg.training.tqdm_interval_sec) as tepoch:
                     for batch_idx, batch in enumerate(tepoch):
-                        # device transfer
-                        batch = dict_apply(batch, lambda x: x.to(device, non_blocking=True))
+                        # device transfer with MPS compatibility
+                        def to_device_safe(x):
+                            if hasattr(x, 'to'):
+                                # Convert float64 to float32 for MPS compatibility
+                                if device.type == 'mps' and x.dtype == torch.float64:
+                                    x = x.to(torch.float32)
+                                return x.to(device, non_blocking=True)
+                            return x
+                        
+                        batch = dict_apply(batch, to_device_safe)
+                        
                         if train_sampling_batch is None:
                             train_sampling_batch = batch
 
@@ -282,7 +291,15 @@ class TrainActionDiffusionImageWorkspace(BaseWorkspace):
                         with tqdm.tqdm(val_dataloader, desc=f"Validation epoch {self.epoch}", 
                                 leave=False, mininterval=cfg.training.tqdm_interval_sec) as tepoch:
                             for batch_idx, batch in enumerate(tepoch):
-                                batch = dict_apply(batch, lambda x: x.to(device, non_blocking=True))
+                                def to_device_safe(x):
+                                    if hasattr(x, 'to'):
+                                        # Convert float64 to float32 for MPS compatibility
+                                        if device.type == 'mps' and x.dtype == torch.float64:
+                                            x = x.to(torch.float32)
+                                        return x.to(device, non_blocking=True)
+                                    return x
+                                
+                                batch = dict_apply(batch, to_device_safe)
                                 loss = self.model.compute_loss(batch)
                                 val_losses.append(loss.item())
                                 if (cfg.training.max_val_steps is not None) \
@@ -299,7 +316,7 @@ class TrainActionDiffusionImageWorkspace(BaseWorkspace):
                     with torch.no_grad():
                         try:
                             # sample trajectory from training set, and evaluate difference
-                            batch = dict_apply(train_sampling_batch, lambda x: x.to(device, non_blocking=True))
+                            batch = dict_apply(train_sampling_batch, lambda x: to_device_safe(x))
                             obs_dict = batch['obs']
                             gt_action = batch['action']
 

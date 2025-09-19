@@ -57,7 +57,8 @@ task:
   # Dataset configuration
   dataset:
     _target_: genesis_ILDP.dataset.pusht_image_dataset.PushTImageDataset
-    zarr_path: genesis_ILDP/data/train_data/pusht/pusht_cchi_v7_replay.zarr
+    # zarr_path: genesis_ILDP/data/train_data/pusht/pusht_cchi_v7_replay.zarr
+    zarr_path: genesis_ILDP/data/train_data/pusht/pusht_test_0919_2.zarr
     horizon: ${horizon}
     pad_before: ${eval:'${n_obs_steps}-1'}     # 1
     pad_after: ${eval:'${n_action_steps}-1'}   # 7  
