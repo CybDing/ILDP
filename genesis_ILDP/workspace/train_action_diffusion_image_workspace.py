@@ -44,12 +44,15 @@ class TrainActionDiffusionImageWorkspace(BaseWorkspace):
         device = torch.device(cfg.training.device)
         seed = cfg.training.seed
 
-        # Create a generator and explicitly move it to the CUDA device
-        self.generator = torch.Generator(device=device)
+        # Create CPU generator for DataLoader (multiprocessing compatibility)
+        self.generator = torch.Generator(device=device)  # Remove device parameter - defaults to CPU
         self.generator.manual_seed(seed)
 
         np.random.seed(seed)
         random.seed(seed)
+        torch.manual_seed(seed)  # Set global seed for CUDA operations
+        if device.type == 'cuda':
+            torch.cuda.manual_seed_all(seed)  # Set CUDA seed for all devices
 
         self.model: ActionDiffusionImagePolicy = hydra.utils.instantiate(cfg.policy)
         
@@ -84,28 +87,35 @@ class TrainActionDiffusionImageWorkspace(BaseWorkspace):
         dataset = hydra.utils.instantiate(cfg.task.dataset)
         assert isinstance(dataset, BaseImageDataset), f"Expected BaseImageDataset, got {type(dataset)}"
 
-        # Handle MPS device compatibility for DataLoader
+        # Handle DataLoader configuration
         dataloader_kwargs = dict(cfg.dataloader)
         val_dataloader_kwargs = dict(cfg.val_dataloader)
 
         device = torch.device(cfg.training.device)
-        seed = cfg.training.seed
-        # if device.type == 'mps' and dataloader_kwargs.get('shuffle', False):
-        #     # MPS has compatibility issues with DataLoader shuffling
-        #     # Disable shuffling for MPS devices to avoid generator conflicts
-        #     dataloader_kwargs['shuffle'] = False
-        #     print("Warning: Disabled DataLoader shuffle for MPS device compatibility")
+        
+        # Fix generator usage for DataLoader
+        if dataloader_kwargs.get('num_workers', 0) > 0:
+            # For multiprocessing, use CPU generator
+            train_dataloader = DataLoader(dataset, 
+                                          generator=self.generator,  # CPU generator
+                                          **dataloader_kwargs)
+        else:
+            # For single process, generator can be None
+            train_dataloader = DataLoader(dataset, 
+                                          **dataloader_kwargs)
 
-        train_dataloader = DataLoader(dataset, 
-                                      generator=self.generator,
-                                      **dataloader_kwargs)
         normalizer = dataset.get_normalizer()
 
         # configure validation dataset
         val_dataset = dataset.get_validation_dataset()
-        val_dataloader = DataLoader(val_dataset, 
-                                    generator=self.generator, 
-                                    **val_dataloader_kwargs)
+        
+        if val_dataloader_kwargs.get('num_workers', 0) > 0:
+            val_dataloader = DataLoader(val_dataset, 
+                                        generator=self.generator,  # CPU generator
+                                        **val_dataloader_kwargs)
+        else:
+            val_dataloader = DataLoader(val_dataset, 
+                                        **val_dataloader_kwargs)
 
         self.model.set_normalizer(normalizer)
         if cfg.training.use_ema:
@@ -321,9 +331,25 @@ class TrainActionDiffusionImageWorkspace(BaseWorkspace):
                             gt_action = batch['action']
 
                             # Debug print to understand batch shapes
-                            # print(f"Sampling batch shapes - obs image: {obs_dict['image'].shape}, obs agent_pos: {obs_dict['agent_pos'].shape}, gt_action: {gt_action.shape}")
+                            print(f"Full batch shapes - obs image: {obs_dict['image'].shape}, obs agent_pos: {obs_dict['agent_pos'].shape}, gt_action: {gt_action.shape}")
 
-                            result = policy.predict_action(obs_dict)
+                            # Slice observations to match policy's expected input
+                            # Assume policy expects the first few timesteps for observation
+                            n_obs_steps = getattr(self.model, 'n_obs_steps', 2)  # Default to 2 if not specified
+                            
+                            obs_dict_sliced = {
+                                'image': obs_dict['image'][:, :n_obs_steps],  # (batch_size, n_obs_steps, ...)
+                                'agent_pos': obs_dict['agent_pos'][:, :n_obs_steps]  # (batch_size, n_obs_steps, ...)
+                            }
+                            
+                            # For evaluation, use the actions corresponding to the prediction horizon
+                            # Typically this would be the actions after the observation period
+                            # pred_horizon = getattr(self.model, 'horizon', 16)  # Get prediction horizon
+                            # gt_action_sliced = gt_action[:, n_obs_steps:n_obs_steps+pred_horizon]
+
+                            print(f"Sliced shapes - obs image: {obs_dict_sliced['image'].shape}, obs agent_pos: {obs_dict_sliced['agent_pos'].shape}, gt_action: {gt_action_sliced.shape}")
+
+                            result = policy.predict_action(obs_dict_sliced)
                             pred_action = result['action_pred']
                             mse = torch.nn.functional.mse_loss(pred_action, gt_action)
                             step_log['train_action_mse_error'] = mse.item()
@@ -332,11 +358,15 @@ class TrainActionDiffusionImageWorkspace(BaseWorkspace):
                             del batch
                             del obs_dict
                             del gt_action
+                            del obs_dict_sliced
+                            del gt_action_sliced
                             del result
                             del pred_action
                             del mse
                         except Exception as e:
                             print(f"Warning: Sampling evaluation failed: {e}")
+                            import traceback
+                            traceback.print_exc()  # Add this for better debugging
                 
                 if (self.epoch % cfg.training.checkpoint_every) == 0:
                     # checkpointing

@@ -25,19 +25,18 @@ class PushTEnv(gym.Env):
 
     def __init__(self,
                  render_size=(96, 96),
-                 xlim=.2,
-                 ylim=.2,
+                 xlim=.1,
+                 ylim=.1,
                  seed=None, 
                  model_path=env_path,
                  fps = 30,
                  show_fps = True,
                  device = None,
-                 done_ratio = 0.85
                  ):
 
         self.render_size = render_size
         self.sim_hz = 100.0 # sim_hz represent the actual simulation timestep for robotic manipulation 
-        self.control_hz = 5.0 # control_hz represent the control frequency of receiving a new action from controller
+        self.control_hz = 10.0 # control_hz represent the control frequency of receiving a new action from controller
         self.is_init = False
         self._seed = seed
         self.scene = None
@@ -49,7 +48,6 @@ class PushTEnv(gym.Env):
         self.fps = fps
         self.show_fps = show_fps
         self.device = None
-        self.done_ratio = done_ratio
 
         self.ini_delta_dis: Union[float, np.ndarray] = 0.0
         self.ini_delta_ang: Union[float, np.ndarray] = 0.0 
@@ -235,7 +233,7 @@ class PushTEnv(gym.Env):
             x_span = float(self.block_lim['xlim'])   # e.g., 0.1 -> x in [-0.45, -0.25]
             y_span = float(self.block_lim['ylim'])   # e.g., 0.1 -> y in [ 0.25,  0.45]
             min_xy_sep = 0.12                        # meters, tune
-            min_ang_sep = np.deg2rad(20.0)           # radians, set 0 to disable
+            min_ang_sep = np.deg2rad(40.0)           # radians, set 0 to disable
             max_tries = 64
 
             def sample_xy():
@@ -393,7 +391,7 @@ class PushTEnv(gym.Env):
             else: 
                quat = torch.tile(torch.tensor([0, 0, 1, 0], device=self.device), (len(envs_idx), 1))
                qpos = self._ikine(self.eef, action, quat, envs_idx)
-            #    print(qpos)
+               print(qpos)
             self.robot.control_dofs_position(position=qpos[:, 0:7], # does not control tcp joints
                                         dofs_idx_local=self.robot_dofs_idx[0:7], 
                                         envs_idx=envs_idx
@@ -410,7 +408,7 @@ class PushTEnv(gym.Env):
         steps = 0
         for _ in range(n_steps):
             self.scene.step()
-            if (steps+1) % 3 == 0: # make sure that the frames being rendered is at about 30 fps 
+            if (steps+1) % 9 == 0: # make sure that the frames being rendered is at about 30 fps 
                 observation = self._get_obs(rgb=True, envs_idx=envs_idx) # render less for faster simulation 
             steps = steps + 1
         # for point in waypoints:
@@ -430,7 +428,7 @@ class PushTEnv(gym.Env):
         # observation = self._get_obs(rgb=True, envs_idx=envs_idx)
         info = self._get_info(envs_idx)
         
-        done = [ratio > self.done_ratio for ratio in self._cal_intersection()]
+        done = [ratio > 0.95 for ratio in self._cal_intersection()]
         reward = self._cal_rewards()
 
         return observation, reward, done, info    
@@ -537,61 +535,19 @@ class PushTEnv(gym.Env):
     
 
     def _cal_rewards(self) -> Union[torch.FloatType, torch.Tensor]:
-        """
-        Interpretable reward function for PushT task.
-
-        Reward components:
-        1. Position proximity: [0, 5] - Higher when object closer to target
-        2. Angle alignment: [0, 2] - Higher when angles match
-        3. Success bonus: +10 - Large bonus for task completion
-        4. Progress bonus: [0, 1] - Rewards improvement from initial state
-
-        Total reward range: [0, 18] where:
-        - 0-8: Poor performance
-        - 8-12: Good progress
-        - 12-18: Excellent/Success
-        """
-        if self.poses is None:
+        if self.poses is None: 
             default_envs = torch.arange(self.n_envs, device=gs.device, dtype=torch.int32)
             self._get_poses(default_envs)
-
+            
         cur_pos = self.poses['cur_Tpose']
         tar_pos = self.poses['target_Tpose']
 
-        # Calculate current distance and angle errors
-        pos_error = torch.linalg.norm(cur_pos[:, :2] - tar_pos[:, :2], dim=1)  # Fix dimension
+        dis = torch.linalg.norm(cur_pos[:, :2] - tar_pos[:, :2])
+        # Wrap angle difference to [-pi, pi]
         ang_diff = torch.atan2(torch.sin(cur_pos[:, 5] - tar_pos[:, 5]), torch.cos(cur_pos[:, 5] - tar_pos[:, 5]))
-        ang_error = torch.abs(ang_diff)
+        ang = torch.abs(ang_diff)
 
-        # === COMPONENT 1: Position Proximity Reward (0-5 points) ===
-        # Exponential decay: close distance = high reward
-        max_distance = 0.5  # meters (reasonable workspace)
-        pos_reward = 5.0 * torch.exp(-3.0 * pos_error / max_distance)
-
-        # === COMPONENT 2: Angle Alignment Reward (0-2 points) ===
-        # Cosine-based: aligned angles = high reward
-        ang_reward = 2.0 * torch.cos(ang_error)  # cos(0)=1, cos(π)=-1, clamp to [0,2]
-        ang_reward = torch.clamp(ang_reward, 0.0, 2.0)
-
-        # === COMPONENT 3: Success Bonus (0 or 10 points) ===
-        # Large bonus for completing the task
-        intersection_ratios = torch.tensor(self._cal_intersection(), device=gs.device)
-        success_bonus = 10.0 * (intersection_ratios > self.done_ratio).float()
-
-        # === COMPONENT 4: Progress Bonus (0-1 points) ===
-        # Reward improvement from initial state
-        pos_progress = torch.clamp((self.ini_delta_dis - pos_error) / self.ini_delta_dis, 0.0, 1.0)
-
-        # === TOTAL REWARD ===
-        total_reward = pos_reward + ang_reward + success_bonus + pos_progress
-
-        # Optional: Add debugging info (can be disabled for training)
-        if hasattr(self, 'debug_rewards') and self.debug_rewards:
-            print(f"Reward breakdown - Pos: {pos_reward[0]:.2f}, Ang: {ang_reward[0]:.2f}, "
-                  f"Success: {success_bonus[0]:.2f}, Progress: {pos_progress[0]:.2f}, "
-                  f"Total: {total_reward[0]:.2f}")
-
-        return total_reward
+        return 1 / (dis/self.ini_delta_dis + 0.1) / torch.sqrt(ang/self.ini_delta_ang + 0.1) - self.reward0
 
 
     def _ikine(self, link: gs.engine.entities.rigid_entity.RigidLink, 

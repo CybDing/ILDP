@@ -42,10 +42,18 @@ policy:
   obs_steps: ${n_obs_steps}    # For your custom ActionDiffusion model
   
   # Diffusion parameters (standard settings)
-  diff_steps: 100              # Number of diffusion steps
+  diff_steps: 300              # Number of diffusion steps
   scheduler_mode: 'Linear'     # Your custom scheduler mode
-  num_inference_steps: 100     # Inference steps
-  
+  # num_inference_steps: 100     # Inference steps
+
+  # Encoding settings (IMPORTANT for performance)
+  encode_agent_pos: false      # Set to false to match reference DP architecture
+  vision_backbone: 'resnet18'  # Vision backbone
+
+  # DDIM settings for inference (training uses DDPM)
+  ddim_steps: 15               # Number of DDIM steps for inference
+  noise_intensity: 0.0         # DDIM noise intensity (0.0=deterministic)
+
   # Note: Your ActionDiffusionImagePolicy uses custom noise scheduler
   # The diffusers scheduler is commented out to use your implementation
 
@@ -58,19 +66,19 @@ task:
   dataset:
     _target_: genesis_ILDP.dataset.pusht_image_dataset.PushTImageDataset
     # zarr_path: genesis_ILDP/data/train_data/pusht/pusht_cchi_v7_replay.zarr
-    zarr_path: genesis_ILDP/data/train_data/pusht/pusht_test_0919_2.zarr
+    zarr_path: genesis_ILDP/data/train_data/pusht/pusht_train_0920.zarr
     horizon: ${horizon}
     pad_before: ${eval:'${n_obs_steps}-1'}     # 1
     pad_after: ${eval:'${n_action_steps}-1'}   # 7  
     seed: 42
-    val_ratio: 0.02
+    val_ratio: 0.05
     max_train_episodes: 90
   
   # Environment runner (optional for training, but good for evaluation)
   env_runner:
     _target_: genesis_ILDP.env_runner.pusht_image_runner.PushTImageRunner
     output_dir: ${multi_run.run_dir}
-    fps: 10
+    fps: 30
     max_steps: 300
     n_action_steps: ${n_action_steps}
     n_obs_steps: ${n_obs_steps}
@@ -87,8 +95,8 @@ task:
 training:
   seed: 42
   device: mps:0
-  num_epochs: 3000             # Standard training epochs
-  batch_size: 64               # Batch size
+  num_epochs: 600             # Standard training epochs
+  batch_size: 100               # Batch size
   
   # Learning and optimization
   lr_scheduler: cosine
@@ -109,7 +117,7 @@ training:
   debug: false
   tqdm_interval_sec: 1.0
   use_ema: true                # Use exponential moving average
-  resume: true                 # Resume from checkpoint if available
+  resume: false                # Resume from checkpoint if available
 
 # === OPTIMIZER CONFIGURATION ===
 optimizer:
@@ -122,14 +130,14 @@ optimizer:
 # === DATA LOADING ===
 dataloader:
   batch_size: ${training.batch_size}
-  num_workers: 0  # Disable multiprocessing for testing
+  num_workers: 0  
   persistent_workers: false
   pin_memory: true
   shuffle: true
 
 val_dataloader:
   batch_size: ${training.batch_size}
-  num_workers: 0  # Disable multiprocessing for testing
+  num_workers: 0
   persistent_workers: false
   pin_memory: true
   shuffle: false

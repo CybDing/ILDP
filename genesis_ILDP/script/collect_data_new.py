@@ -26,7 +26,7 @@ GREEN = (50, 255, 50)
 BLUE = (50, 50, 255)
 BLACK = (0, 0, 0)
 YELLOW = (255, 255, 0)
-SCALE = 1200
+SCALE = 1300
 
 latest_data = {
     "cur_keypoints": [],

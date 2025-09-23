@@ -11,6 +11,7 @@ from diffusion_policy.model.common.normalizer import LinearNormalizer
 from diffusion_policy.common.normalize_util import get_image_range_normalizer
 
 from genesis_ILDP.dataset.base_dataset import BaseImageDataset
+import matplotlib.pyplot as plt
 
 
 class PushTImageDataset(BaseImageDataset):
@@ -93,31 +94,113 @@ class PushTImageDataset(BaseImageDataset):
         torch_data = dict_apply(data, torch.from_numpy)
         return torch_data
 
+def visualize_sequence_images(dataset, idx=0, max_frames=8):
+    """
+    Visualize images from a sequence in the dataset
+    
+    Args:
+        dataset: PushTImageDataset instance
+        idx: sequence index to visualize
+        max_frames: maximum number of frames to display
+    """
+    sample = dataset.__getitem__(idx)
+    images = sample['obs']['image']  # Shape: (T, 3, 96, 96)
+    agent_pos = sample['obs']['agent_pos']  # Shape: (T, 2)
+    actions = sample['action']  # Shape: (T, 2)
+    
+    T = images.shape[0]
+    n_frames = min(T, max_frames)
+    
+    fig, axes = plt.subplots(2, n_frames//2 if n_frames > 4 else n_frames, 
+                            figsize=(15, 8 if n_frames > 4 else 4))
+    if n_frames <= 4:
+        axes = axes.reshape(1, -1) if n_frames > 1 else [[axes]]
+    
+    for i in range(n_frames):
+        row = i // (n_frames//2) if n_frames > 4 else 0
+        col = i % (n_frames//2) if n_frames > 4 else i
+        
+        # Convert from CHW to HWC format and from tensor to numpy
+        img = images[i].permute(1, 2, 0).numpy()  # (96, 96, 3)
+        
+        # Clip values to [0,1] range just in case
+        img = np.clip(img, 0, 1)
+        
+        axes[row][col].imshow(img)
+        axes[row][col].set_title(f'Frame {i}\nAgent: ({agent_pos[i][0]:.3f}, {agent_pos[i][1]:.3f})\n'
+                                f'Action: ({actions[i][0]:.3f}, {actions[i][1]:.3f})')
+        axes[row][col].axis('off')
+    
+    # Hide empty subplots
+    if n_frames < len(axes.flat):
+        for i in range(n_frames, len(axes.flat)):
+            axes.flat[i].axis('off')
+    
+    plt.tight_layout()
+    plt.show()
+
+def display_single_image(image_tensor, title="Image"):
+    """
+    Display a single image tensor
+    
+    Args:
+        image_tensor: tensor of shape (3, H, W) or (H, W, 3)
+        title: title for the plot
+    """
+    # Handle different input formats
+    if len(image_tensor.shape) == 3:
+        if image_tensor.shape[0] == 3:  # CHW format
+            img = image_tensor.permute(1, 2, 0).numpy()
+        else:  # HWC format
+            img = image_tensor.numpy()
+    else:
+        raise ValueError(f"Unexpected image shape: {image_tensor.shape}")
+    
+    img = np.clip(img, 0, 1)
+    
+    plt.figure(figsize=(6, 6))
+    plt.imshow(img)
+    plt.title(title)
+    plt.axis('off')
+    plt.show()
 
 def test():
     import os
     import sys
 
-    zarr_path = '../data/train_data/pusht/pusht_test_0919_2.zarr'
+    zarr_path = '../data/train_data/pusht/pusht_test_0919_3.zarr'
+    zarr_path = '../data/train_data/pusht/pusht_train_0920.zarr'
     zarr_path = '../data/train_data/pusht/pusht_cchi_v7_replay.zarr'
+    zarr_path = '../data/train_data/pusht/genesis_data_20250921_004830.zarr' 
+    
     dataset = PushTImageDataset(zarr_path, horizon=16)
     print("Total sequences stored in Replay buffer: ", len(dataset))
     print(len(dataset.__getitem__(10)['obs']['agent_pos']))
     print(len(dataset.__getitem__(10)['action']))
 
-    print("action sequence:  ", dataset.__getitem__(0)['action'])
-    print("agent_pos sequence:  ", dataset.__getitem__(0)['obs']['agent_pos'])
-    print("imgs dim: ", dataset.__getitem__(0)['obs']['image'].shape)
+    print("action sequence:  ", dataset.__getitem__(10)['action'])
+    # print("agent_pos sequence:  ", dataset.__getitem__(0)['obs']['agent_pos'])
+    # print("imgs dim: ", dataset.__getitem__(0)['obs']['image'])
     normalizer = dataset.get_normalizer(mode='limits')
 
-    print("normalizer stat: \n", normalizer.get_input_stats()['action'], normalizer.get_output_stats())
+    # print("normalizer stat: \n", normalizer.get_input_stats()['action'], normalizer.get_output_stats())
+    print(normalizer['action'].normalize(dataset.__getitem__(100)['action']))
+    print(normalizer.normalize({'action':(dataset.__getitem__(100)['action'])}))
 
-    # print(dataset.replay_buffer.root)
-    # from matplotlib import pyplot as plt
-    # normalizer = dataset.get_normalizer()
-    # nactions = normalizer['action'].normalize(dataset.replay_buffer['action'])
-    # diff = np.diff(nactions, axis=0)
-    # dists = np.linalg.norm(np.diff(nactions, axis=0), axis=-1)
+    # print(normalizer.unnormalize({'action':torch.Tensor([[0.1, 0]])}))
+
+    # Add visualization after existing test code
+    # print("\nVisualizing images...")
+    visualize_sequence_images(dataset, idx=3000, max_frames=16)
+    
+    # # Display a single frame
+    # sample = dataset.__getitem__(-30)
+    # first_image = sample['obs']['image'][0]  # First frame
+    # print(first_image)
+    # display_single_image(first_image, "First Frame of Sequence")
+    
+    # print(f"Image tensor shape: {first_image.shape}")
+    # print(f"Image value range: [{first_image.min():.3f}, {first_image.max():.3f}]")
 
 if __name__ == "__main__":
     test()

@@ -39,14 +39,16 @@ class PushTImageRunner(BaseImageRunner):
                  image_shape=(96, 96),
                  tqdm_interval_sec=1.0,
                  n_envs = None,
-                 fps = 20,
+                 fps = 30,
+                 device = 'cuda:0',
                 #  crf = 22, # video quality
-                 past_action=False,
+                 enable_past_action=True,
                  train_start_seed = 0,
                  test_start_seed = 5000, 
                  # does not reach 100000 episodes
-                 enable_render = True,
+                 enable_render = False,
                  max_envs_running = 3,
+                 done_ratio = 0.85
                  ):
         super().__init__(output_dir)
         if n_envs is None:
@@ -56,15 +58,14 @@ class PushTImageRunner(BaseImageRunner):
             self.n_envs = n_envs
             print(f"Using provided n_envs: {self.n_envs}")
 
-        steps_per_render = 1 # double check!
-        
-        # set the max_envs for parallel envs running together inside the genesis engine for less gpu memory
         self.parallel_envs_counts = min(max_envs_running, self.n_envs) 
         self.env = MultiStepWrapper(
                     PushTEnv(
                         render_size=image_shape,
                         fps = fps,
-                        show_fps=False
+                        show_fps=False,
+                        device=device, 
+                        done_ratio=done_ratio
                     ),
                 n_obs_steps=n_obs_steps,
                 n_action_steps=n_action_steps,
@@ -77,9 +78,9 @@ class PushTImageRunner(BaseImageRunner):
         self.n_test_vis = min(self.n_test, n_test_vis)
         self.n_obs_steps = n_obs_steps
         self.n_action_steps = n_action_steps
-        self.device = 'cuda' if torch.cuda.is_available() else 'cpu'
+        self.device = device
         self.max_steps = max_steps
-        self.past_action = past_action
+        self.enable_past_action = enable_past_action
         self.seed_train = train_start_seed
         self.seed_test = test_start_seed
         self.file_path = list()
@@ -88,6 +89,7 @@ class PushTImageRunner(BaseImageRunner):
         self.tqdm_interval_sec = tqdm_interval_sec
         self.env_seeds = None
         self.info = None
+        self.done_ratio = done_ratio
 
         self._setup_envs()
 
@@ -108,7 +110,7 @@ class PushTImageRunner(BaseImageRunner):
             if hasattr(value, 'shape'):
                 print(f"Reset obs['{key}'].shape: {value.shape}")
 
-        past_action = None
+        self.past_action = None
         # policy.reset()  # Reset states for stateful policy
         done = False
 
@@ -121,11 +123,13 @@ class PushTImageRunner(BaseImageRunner):
         # envs_remained = self.n_envs
             
         try:
-            while not done:
+            active_envs_idx = list(range(self.n_envs)) # current set up for full active envs for predicting the action
+            is_done = False
+            while not is_done:
                 obs_dict = dict(obs)
 
                 # Debug: print obs_dict structure before policy call
-                # print(f"Before policy - obs_dict keys: {obs_dict.keys()}")
+                print(f"Before policy - obs_dict keys: {obs_dict.keys()}")
 
                 if 'envs_idx' in obs_dict:
                     # print(f"Removing envs_idx from obs_dict")
@@ -134,14 +138,14 @@ class PushTImageRunner(BaseImageRunner):
                 # Add past action if enabled, and note that the past action is counted according to the n_obs_steps number
                 # if n_obs_steps is larger than 2, say 3, than the past action should only terminate at one step before the full execution
                 # since it start planning earlier ? 
-                if self.past_action and (past_action is not None):
-                    obs_dict['past_action'] = past_action[
-                                            :, -(self.n_obs_steps - 1):
-                                            ].astype(np.float32)
+                # if self.past_action and (past_action is not None):
+                #     obs_dict['past_action'] = past_action[
+                #                             :, -(self.n_obs_steps - 1):
+                #                             ].astype(np.float32)
 
                 with torch.no_grad():
                     # Debug print to understand rollout input shapes
-                    # print(f"Rollout obs_dict shapes - image: {obs_dict['image'].shape}, agent_pos: {obs_dict['agent_pos'].shape}")
+                    print(f"Rollout obs_dict shapes - image: {obs_dict['image'].shape}, agent_pos: {obs_dict['agent_pos'].shape}")
 
                     action_dict = policy.predict_action(obs_dict)
 
@@ -150,15 +154,26 @@ class PushTImageRunner(BaseImageRunner):
                 else:
                     action = action_dict
 
+                envs_count = action.shape[0]
+                if envs_count != len(active_envs_idx):
+                    raise ValueError("Inconsistent envs number for active envs when predicting actions")
+                else:
+                    Active_action = {
+                        'envs_idx': active_envs_idx, 
+                        'action': action
+                    }
                 # Debug print to understand rollout output shapes
-                # print(f"Rollout action shape: {action.shape}, expected batch size: {self.n_envs}")
+                print(f"Rollout action shape: {action.shape}, expected batch size: {len(Active_action['envs_idx'])}")
+                      
+                obs, reward, done, info = self.env.step(Active_action)
 
-                obs, reward, done, info, env_status = self.env.step(action)
-                
-                past_action = action
-                
-                obs = self._process_info(obs, reward, info, env_status)
+                if self.enable_past_action:
+                    self._update_past_action(Active_action)
 
+                obs, active_envs_idx = self._process_info(obs, reward, info, done)
+                print(done)
+                if 2 not in done:
+                    is_done = True
                 pbar.update(1)  # Update by 1 step since all envs run together
                 
         except Exception as e:
@@ -167,7 +182,6 @@ class PushTImageRunner(BaseImageRunner):
         finally:
             pbar.close()
 
-        # Handle video recording cleanup
         if self.enable_render: 
             try:
                 self.env.stop_recording(self.base_generate_path)
@@ -183,6 +197,20 @@ class PushTImageRunner(BaseImageRunner):
         # Create and return logging data
         log_data = self._create_log_data()
         return log_data
+    
+
+    def _update_past_action(self, action_dict):
+        if self.past_action is None:
+            self.past_action = [[] for _ in range(self.n_envs)]
+        assert 'envs_idx' in action_dict.keys()
+        local_idx = 0
+        for i in range(self.n_envs):
+            if i in action_dict['envs_idx']:
+                print(self.past_action)
+                self.past_action[i].append(action_dict['action'][local_idx])
+                local_idx = local_idx + 1
+            else:
+                self.past_action[i].append(None)
 
     def _setup_envs(self,):
         # TODO should refine this initializing process inside the wrapper function without directly callout the start function from api env
@@ -284,17 +312,18 @@ class PushTImageRunner(BaseImageRunner):
         
         active_env_indices = []
         for i in range(self.n_envs):
-            if env_status[i] == 0 and final_saving==True: # save for truncating envs
-                # copy latest info
-                for key in self.info.keys():
-                    if key == 'envs_idx': continue
-                    if reward[i] is None: raise ValueError("Reward saving error!")
-                    self.info[key][i] = info[key][i]
+            # if env_status[i] == 0 and final_saving==True: # save for truncating envs
+            #     # copy latest info
+            #     for key in self.info.keys():
+            #         if key == 'envs_idx': continue
+            #         if reward[i] is None: raise ValueError("Reward saving error!")
+            #         self.info[key][i] = info[key][i]
             
             if reward[i] is None: raise ValueError("Reward saving error!")
-            self.episode_reward[i].append(reward[i])
+            self.episode_reward[i].append(reward[i].cpu().numpy())
 
-            if env_status[i] == 2: # 活跃环境
+            if env_status[i] == 2: # does not save for final info, but save for the current idx number for aggregate the observation for predicting new action as well as stepping in 
+                # multistep_wrapper_parallel.py 
                 active_env_indices.append(i)
             
             if env_status[i] == 1: # save for terminated envs
@@ -308,11 +337,10 @@ class PushTImageRunner(BaseImageRunner):
                 raise TypeError('Obs Type Error!')
             
             for key in obs.keys():
-                if key == 'envs_idx':
-                    continue
 
                 active_obs = []
                 for i in active_env_indices:
+                    # including adding the envs idx for future executing action 
                     if obs[key][i] is None: 
                         raise ValueError("Obs Saving Error!")
                     active_obs.append(obs[key][i])
@@ -320,8 +348,7 @@ class PushTImageRunner(BaseImageRunner):
                 if active_obs:
                     new_obs[key] = torch.stack(active_obs, dim=0)
         
-        # print(f"Active envs: {active_env_indices}, new_obs keys: {list(new_obs.keys())}")
-        return new_obs
+        return new_obs, active_env_indices
 
 
     def _create_log_data(self):

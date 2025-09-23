@@ -15,7 +15,7 @@ from genesis_ILDP.dataset.pusht_image_dataset import PushTImageDataset
 from diffusion_policy.model.common.normalizer import LinearNormalizer
 
 # Encoding dimensions
-dim_time_ebd = 256
+dim_time_ebd = 128
 dim_imgs_ebd = 1024  # per observation step
 dim_agentPos_ebd = 512  # per observation step
 # For n_obs_steps=2: time(256) + imgs(2*1024) + agent_pos(2*512) = 256 + 2048 + 1024 = 3328
@@ -28,12 +28,16 @@ class ActionDiffusionImagePolicy(BaseImagePolicy):
     def __init__(self,
                  shape_meta: dict,
                  normalizer: LinearNormalizer = None,
+                 vision_backbone: str = 'custom',
                  diff_steps: int = 100,
                  scheduler_mode: str = 'Linear',
                  obs_steps: int = 2,
                  horizon: int = 16,
                  n_action_steps: int = 8,
                  n_obs_steps: int = 2,
+                 encode_agent_pos: bool = False,  # Whether to encode agent_pos with MLP
+                 ddim_steps: int = None,  # Number of DDIM steps (if None, auto-calculate)
+                 noise_intensity: float = 0.0,  # DDIM noise intensity
                  **kwargs):
         super().__init__()
         
@@ -53,11 +57,29 @@ class ActionDiffusionImagePolicy(BaseImagePolicy):
         self.horizon = horizon
         self.n_action_steps = n_action_steps
         self.n_obs_steps = n_obs_steps
-        
+        self.encode_agent_pos = encode_agent_pos
+        self.ddim_steps = ddim_steps
+        self.noise_intensity = noise_intensity
+
+        # Calculate global feature dimension based on encoding choice
+        img_encoding_dim = 1024 # 1024 
+        time_encoding_dim = 128 #
+        if encode_agent_pos:
+            agent_pos_encoding_dim = 512
+            dim_global_features = img_encoding_dim * 2 + time_encoding_dim + agent_pos_encoding_dim
+        else:
+            # Raw agent_pos has 2 dimensions per observation step
+            agent_pos_dim = 2 * n_obs_steps
+            dim_global_features = img_encoding_dim * 2 + time_encoding_dim + agent_pos_dim
+
         self.conditioned_unet = Unet(dim_global_features, input_dim=self.action_dim)
-        self.imgs_encoding_net = global_img_encoding(in_channels=3, encoded_dim=1024)
+        self.imgs_encoding_net = global_img_encoding(in_channels=3, encoded_dim=img_encoding_dim, backbone=vision_backbone)
         self.time_encoding = time_encoding  # encoding function for diffusion steps
-        self.agent_pos_encoding = pos_encoding(encoded_dim=512)
+
+        if encode_agent_pos:
+            self.agent_pos_encoding = pos_encoding(encoded_dim=512)
+        else:
+            self.agent_pos_encoding = None  # Use raw agent_pos
 
         self.betas, self.cum_alphas = self.NoiseScheduler(mode=self.scheduler_mode)
         self.traj_shape = (horizon, self.action_dim)
@@ -121,39 +143,46 @@ class ActionDiffusionImagePolicy(BaseImagePolicy):
     def predict_action(self, obs_dict: Dict[str, torch.Tensor]) -> Dict[str, torch.Tensor]:
         """
         Predict actions given observations.
-        
-        Args:
-            obs_dict: Dictionary containing:
-                - 'image': torch.Tensor of shape (B, To, C, H, W)  
-                - 'agent_pos': torch.Tensor of shape (B, To, 2)
-                
-        Returns:
-            Dictionary containing:
-                - 'action': torch.Tensor of shape (B, Ta, Da) - actions for execution
-                - 'action_pred': torch.Tensor of shape (B, T, Da) - full predicted trajectory
         """
-        # *** TODO: IMPLEMENT NORMALIZER HERE ***
-        # You need to add:
-        # 1. nobs = self.normalizer.normalize(obs_dict)
-        # 2. Use nobs instead of obs_dict in the rest of the function
-        # 3. Unnormalize the predicted actions before returning
-        
+        # Normalize observations like in training.
+        # 1) Ensure channels-first before normalization if needed.
         imgs = obs_dict['image']
         agent_pos = obs_dict['agent_pos']
 
         # Debug print to understand input shapes during rollout
         print(f"predict_action input shapes - imgs: {imgs.shape}, agent_pos: {agent_pos.shape}")
 
-        # Fix image dimension order if needed: [B, T, H, W, C] -> [B, T, C, H, W]
         if len(imgs.shape) == 5 and imgs.shape[-1] == 3:
             print(f"Converting image dimensions from {imgs.shape} to channels-first format")
             imgs = imgs.permute(0, 1, 4, 2, 3)  # [B, T, H, W, C] -> [B, T, C, H, W]
             print(f"After conversion: {imgs.shape}")
 
-        batch_size = imgs.shape[0]
+        # 2) Trim to expected observation steps
+        if imgs.shape[1] > self.n_obs_steps:
+            imgs = imgs[:, :self.n_obs_steps]
+        if agent_pos.shape[1] > self.n_obs_steps:
+            agent_pos = agent_pos[:, :self.n_obs_steps]
 
-        # Use DDPM for action generation
-        action_pred = self.action_generation_ddpm(imgs, agent_pos, batch_size)
+        # 3) Normalize on the current device
+        device = next(self.parameters()).device
+        nobs = self.normalizer.normalize({
+            'image': imgs.to(device),
+            'agent_pos': agent_pos.to(device),
+        })
+
+        nimgs = nobs['image']
+        nagent_pos = nobs['agent_pos']
+        batch_size = nimgs.shape[0]
+
+        # Use DDIM for faster action generation (sampler returns UNNORMALIZED actions already)
+        # Use configured DDIM parameters if available
+        # ddim_steps = self.ddim_steps if self.ddim_steps is not None else None
+        # noise_intensity = self.noise_intensity if hasattr(self, 'noise_intensity') else 0.0
+
+        # action_pred = self.action_generation_ddim(nimgs, nagent_pos, batch_size,
+        #                                          sample_steps=ddim_steps, noise_intensity=noise_intensity)
+
+        action_pred = self.action_generation_ddpm(nimgs, nagent_pos, batch_size)
 
         # Extract action steps for execution (typically the first n_action_steps)
         start = self.n_obs_steps - 1
@@ -169,11 +198,9 @@ class ActionDiffusionImagePolicy(BaseImagePolicy):
 
     def set_normalizer(self, normalizer: LinearNormalizer):
         """Set the data normalizer."""
-        # here we load_state_dict instead of just copying it for the reason that
-        # we want to make sure that the normalizer is on the same device as the
-        # main policy model, to prevent conflict when dealing with normalization
-
         self.normalizer.load_state_dict(normalizer.state_dict())
+        # Ensure buffers are on the same device as the policy
+        self.normalizer.to(next(self.parameters()).device)
 
         # Check that required keys exist in the normalizer
         if hasattr(self.normalizer, 'params_dict') and len(self.normalizer.params_dict) > 0:
@@ -208,10 +235,10 @@ class ActionDiffusionImagePolicy(BaseImagePolicy):
         action = nactions
 
         # Trim observations to obs_steps if needed
-        if imgs.shape[1] > self.obs_steps:
-            imgs = imgs[:, :self.obs_steps]
-        if agent_pos.shape[1] > self.obs_steps:
-            agent_pos = agent_pos[:, :self.obs_steps]
+        if imgs.shape[1] > self.n_obs_steps:
+            imgs = imgs[:, :self.n_obs_steps]
+        if agent_pos.shape[1] > self.n_obs_steps:
+            agent_pos = agent_pos[:, :self.n_obs_steps]
         
         batch_size = imgs.shape[0]
         
@@ -234,7 +261,13 @@ class ActionDiffusionImagePolicy(BaseImagePolicy):
         # Encode observations and time
         t_encoding = torch.stack([self.time_encoding(t.item()) for t in random_t], dim=0)
         imgs_encoding = self.imgs_encoding_net(imgs_stack).reshape(batch_size, -1)
-        pos_encoding = self.agent_pos_encoding(agent_pos_stack).reshape(batch_size, -1)
+
+        if self.encode_agent_pos:
+            pos_encoding = self.agent_pos_encoding(agent_pos_stack).reshape(batch_size, -1)
+        else:
+            # Use raw agent position - flatten across observation steps
+            pos_encoding = agent_pos_stack.reshape(batch_size, -1)  # (B, n_obs_steps * 2)
+
         global_cond = merge_multimodal_encoding(imgs_encoding, pos_encoding, t_encoding)
 
         # Predict noise
@@ -256,11 +289,22 @@ class ActionDiffusionImagePolicy(BaseImagePolicy):
         # Prepare observation features
         imgs_batched = imgs.reshape(-1, *imgs.shape[2:])
         pos_batched = agent_pos.reshape(-1, *agent_pos.shape[2:])
-        
+
         imgs_features_batched = self.imgs_encoding_net(imgs_batched)
-        pos_features_batched = self.agent_pos_encoding(pos_batched)
+
+        if self.encode_agent_pos:
+            pos_features_batched = self.agent_pos_encoding(pos_batched)
+        else:
+            # Use raw agent position
+            pos_features_batched = pos_batched  # No encoding, use raw values
+
         imgs_features = imgs_features_batched.reshape(batch_size, self.n_obs_steps * 1024)
-        pos_features = pos_features_batched.reshape(batch_size, self.n_obs_steps * 512)
+
+        if self.encode_agent_pos:
+            pos_features = pos_features_batched.reshape(batch_size, self.n_obs_steps * 512)
+        else:
+            # Raw agent_pos is already (batch_size * n_obs_steps, 2)
+            pos_features = pos_features_batched.reshape(batch_size, self.n_obs_steps * 2)
 
         # Initialize with random noise
         print(f"action_generation_ddpm: batch_size={batch_size}, traj_shape={self.traj_shape}")
@@ -310,21 +354,35 @@ class ActionDiffusionImagePolicy(BaseImagePolicy):
                               dtype=predicted_trajs_unnormalized.dtype)
         predicted_trajs_with_const = torch.cat([predicted_trajs_unnormalized, const_dim], dim=-1)
         
-        print(f"Added constant dimension: {predicted_trajs_unnormalized.shape} -> {predicted_trajs_with_const.shape}")
         return predicted_trajs_with_const
     
     def action_generation_ddim(self, imgs, agent_pos, batch_size, sample_steps=None, noise_intensity=0.0):
         """DDIM sampling for faster action generation."""
         if sample_steps is None:
-            sample_steps = list(range(0, self.diff_steps, self.diff_steps // 20))  # 20 steps smaller as default
+            # Optimal step selection: uniform spacing for better coverage
+            num_steps = min(20, max(10, self.diff_steps // 15))  # 10-20 steps
+            sample_steps = np.linspace(0, self.diff_steps - 1, num_steps, dtype=int).tolist()
+            sample_steps = sorted(set(sample_steps))  # Remove duplicates and ensure sorted
+        elif isinstance(sample_steps, int):
+            # If integer provided, create that many evenly spaced steps
+            num_steps = min(sample_steps, self.diff_steps)
+            sample_steps = np.linspace(0, self.diff_steps - 1, num_steps, dtype=int).tolist()
+            sample_steps = sorted(set(sample_steps))  # Remove duplicates and ensure sorted
             
         imgs_batched = imgs.reshape(-1, *imgs.shape[2:])
         pos_batched = agent_pos.reshape(-1, *agent_pos.shape[2:])
         
         imgs_features_batched = self.imgs_encoding_net(imgs_batched)
-        pos_features_batched = self.agent_pos_encoding(pos_batched)
+
+        if self.encode_agent_pos:
+            pos_features_batched = self.agent_pos_encoding(pos_batched)
+            pos_features = pos_features_batched.reshape(batch_size, self.n_obs_steps * 512)
+        else:
+            # Use raw agent position
+            pos_features_batched = pos_batched  # No encoding, use raw values
+            pos_features = pos_features_batched.reshape(batch_size, self.n_obs_steps * 2)
+
         imgs_features = imgs_features_batched.reshape(batch_size, self.n_obs_steps * 1024)
-        pos_features = pos_features_batched.reshape(batch_size, self.n_obs_steps * 512)
         
         predicted_trajs = torch.randn(size=(batch_size, *self.traj_shape), device=imgs.device)
 
@@ -370,5 +428,4 @@ class ActionDiffusionImagePolicy(BaseImagePolicy):
                               dtype=predicted_trajs_unnormalized.dtype)
         predicted_trajs_with_const = torch.cat([predicted_trajs_unnormalized, const_dim], dim=-1)
         
-        print(f"Added constant dimension: {predicted_trajs_unnormalized.shape} -> {predicted_trajs_with_const.shape}")
         return predicted_trajs_with_const

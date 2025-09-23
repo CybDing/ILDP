@@ -19,11 +19,11 @@ from flask import Flask, request, jsonify
 from genesis_ILDP.utils.cuda import *
 from genesis_ILDP.config.env_config import *
 from shapely.geometry import Polygon
-from genesis_ILDP.env.pushT_env import PushTEnv
+from genesis_ILDP.env.pushT_env_collect import PushTEnv
 global reset_requested
 class PushTEnvServer(PushTEnv):
     def __init__(self, render_size=(96, 96), xlim=0.1, ylim=0.1, seed=None, 
-                 model_path=env_path, fps=40, show_fps=True):
+                 model_path=env_path, fps=30, show_fps=True):
         super().__init__(
             render_size=render_size, 
             xlim=xlim, 
@@ -47,7 +47,8 @@ class PushTEnvServer(PushTEnv):
         if self.render_cache is None:
             self._get_obs(rgb=True, envs_idx=envs_idx)
         
-        
+        print(self.render_cache[0].shape)
+        print(type(self.render_cache[0]))
         data = {
             "timestamp": time.time(),
             # "env_id": 0,
@@ -68,8 +69,7 @@ class PushTEnvServer(PushTEnv):
             
             "agent_pos": to_numpy(self.poses['agent_pos'][0, :2]).tolist(),  # [x, y]
             
-            "image": self._encode_image(self.render_cache[0][0]) if self.render_cache is not None else None,
-            
+            "image": self._encode_image(self.render_cache[0]) if self.render_cache is not None else None,
             "intersection_ratio": float(self._cal_intersection()[0]),
             "reward": float(self._cal_rewards()[0]),
         }
@@ -92,10 +92,9 @@ class PushTEnvServer(PushTEnv):
 
     def _encode_image(self, img_array):
         try:
-            # 确保图像数据格式正确
             img_np = np.array(img_array)
+            print(img_array.shape)
             
-            # 转换为 (H, W, 3) 用于编码
             if len(img_np.shape) == 3 and img_np.shape[0] == 3:
                 img_np = np.transpose(img_np, (1, 2, 0))
             
@@ -232,7 +231,6 @@ if __name__ == '__main__':
         if action is not None:
             action_count += 1
 
-            # Notify client that this action was executed
             try:
                 requests.post("http://localhost:6000/api/received_action",
                              json={"timestamp": latest_action["timestamp"]},

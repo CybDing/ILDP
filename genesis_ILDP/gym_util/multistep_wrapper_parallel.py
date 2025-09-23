@@ -12,7 +12,8 @@ class MultiStepWrapper(gym.Wrapper):
             n_action_steps, 
             n_envs,
             max_episode_steps=None,
-            reward_agg_method='max'
+            reward_agg_method='max',
+            debug = False
         ):
         super().__init__(env)
         self._action_space = repeated_space(env.action_space, n_action_steps)
@@ -21,8 +22,8 @@ class MultiStepWrapper(gym.Wrapper):
         self.n_obs_steps = n_obs_steps
         self.n_action_steps = n_action_steps
         self.reward_agg_method = reward_agg_method
+        self.debug = debug
         
-        # 获取环境数量
         self.n_envs = n_envs
         if n_envs is None:
             raise ValueError("Environment must have n_envs attribute")
@@ -45,7 +46,6 @@ class MultiStepWrapper(gym.Wrapper):
         obs = super().reset()
         self._reset_buffers()
         
-        # Process all environment observations in batch
         for env_idx in range(self.n_envs):
             env_obs = self._extract_env_data(obs, env_idx)
             self.obs[env_idx].append(env_obs)
@@ -53,18 +53,17 @@ class MultiStepWrapper(gym.Wrapper):
         return self._get_obs(self.n_obs_steps)
     
     def _reset_buffers(self):
-        """Reset all buffers efficiently."""
+        """Reset all buffers."""
         for env_idx in range(self.n_envs):
             self.obs[env_idx].clear()
             self.current_step_rewards[env_idx].clear()
             self.info[env_idx].clear()
         
-        # Reset counters in batch
         self.step_counts = [0] * self.n_envs
         self.active_envs = list(range(self.n_envs))
     
     def _extract_env_data(self, data, array_idx):
-        """Extract data for specific environment index, with proper bounds checking."""
+        """Extract data for specific environment index, with proper shape checking."""
         if not isinstance(data, dict):
             return data
             
@@ -78,52 +77,52 @@ class MultiStepWrapper(gym.Wrapper):
                 except (IndexError, TypeError) as e:
                     raise ValueError(f"Failed to extract environment {array_idx} data for key '{key}': {e}")
             else:
-                # Scalar values are shared across environments
+                print('<INFO> [multistep_wrapper_parallel.py] Fall back to list instead of env dict!')
                 extracted[key] = value
         return extracted
     
     def step(self, action):
-        """Execute multi-step actions efficiently."""
-        # global done_list_global 
-        
-        # Validate action format once
-        self._validate_action(action)
-        
-        # Clear rewards for all active environments in one operation
+        """Execute multi-step actions"""
+
+        # Handle action format from runner (can be dict or tensor)
+        if isinstance(action, dict):
+            if 'action' in action:
+                action = action['action']  
+                assert isinstance(action, torch.Tensor)
+                assert action.shape[0] == len(self.active_envs) # do not check for the idx if the len is correct
+                assert len(action.shape) == 3
+            else:
+                raise ValueError("Action dict must contain 'action' key")
+
         for env_idx in self.active_envs:
             self.current_step_rewards[env_idx].clear()
         
         done_list = []
         
-        # Pre-convert active_envs to tensor (avoid repeated conversion)
         active_envs_tensor = to_torch(np.array(self.active_envs))
         
-        # Determine data types once
-        reward_is_array = None
-        done_is_array = None
-        
-        # Execute n_action_steps
+        # print("[multistep_wrapper_parallel.py]: action shape", action.shape)
+        if self.debug:
+            print("<Debug> [multistep_wrapper_parallel.py]: action in env_idx = 0", action[0, :])
 
-        print("Active_envs counts: ",  active_envs_tensor.shape)
-        print(f"Received action shape: {action.shape}, expected: [{len(self.active_envs)}, {self.n_action_steps}, action_dim]")
-        # print("Current Done list:", done_list_global)
         for step_idx in range(self.n_action_steps):
             current_action = action[:, step_idx, :]
-            
+
             observation, reward, done, info = self.env.step(
                 action=current_action, envs_idx=active_envs_tensor)
-            
-            # Determine array types on first iteration only
-            if step_idx == 0:
-                reward_is_array = isinstance(reward, (list, np.ndarray, torch.Tensor))
-                done_is_array = isinstance(done, (list, np.ndarray, torch.Tensor))
+            # print("[env_observation]", observation)
+            # print("[env_info]", info)
+
+            # if step_idx == 0:
+            #     reward_is_array = isinstance(reward, (list, np.ndarray, torch.Tensor))
+            #     done_is_array = isinstance(done, (list, np.ndarray, torch.Tensor))
             
             # Process all environments in batch
             for i, env_idx in enumerate(self.active_envs):
                 # Extract data using unified function
                 env_obs = self._extract_env_data(observation, i)
-                env_reward = reward[i] if reward_is_array else reward
-                env_done = done[i] if done_is_array else done
+                env_reward = reward[i] 
+                env_done = done[i] 
                 env_info = self._extract_env_data(info, i)
                 
                 # Update environment state
@@ -136,32 +135,29 @@ class MultiStepWrapper(gym.Wrapper):
                 if (self.max_episode_steps is not None and 
                     self.step_counts[env_idx] >= self.max_episode_steps):
                     env_done = True
-                    # print("*" * 50)
                     
-                
-                # Track done environments (avoid duplicates)
                 if env_done and env_idx not in done_list:
                     done_list.append(env_idx)
-                    print("*" * 50)
-                    # done_list_global.append(env_idx)
-        
-        # Aggregate results efficiently
+    
         observation = self._get_obs(self.n_obs_steps)
         reward = self._aggregate_current_rewards()
         info = self._aggregate_current_info()
         
-        # Create env_status array efficiently
-        env_status = self._create_env_status(done_list)
+        done = self._create_env_status(done_list)
         
         # Remove terminated environments from active list
         self.active_envs = [idx for idx in self.active_envs if idx not in done_list]
         
-        done = len(self.active_envs) == 0
-        
-        return observation, reward, done, info, env_status
+        return observation, reward, done, info
     
     def _aggregate_current_rewards(self):
-        """Aggregate rewards with proper error handling."""
+        """Aggregate rewards. Stack the max reward thoughout the whole list with rewards, the inactive envs will be replaced by 0
+            
+            self.current_step_rewards: list including n_envs sublist for appending the current action step reward 
+            
+            output:
+                torch.Tensor: shape(self.n_envs, )                
+        """
         aggregated_rewards = []
         for env_idx in range(self.n_envs):
             env_rewards = self.current_step_rewards[env_idx]
@@ -180,19 +176,11 @@ class MultiStepWrapper(gym.Wrapper):
         
         return torch.stack(aggregated_rewards, dim=0)
     
-    def _validate_action(self, action):
-        """Validate action format once."""
-        if not isinstance(action, (np.ndarray, torch.Tensor)):
-            raise ValueError("Action should be numpy array or torch tensor")
-        if len(action.shape) != 3:
-            raise ValueError(f"Action dim should be 3D: (n_active_envs, n_action_steps, action_dim)")
-        if action.shape[0] != len(self.active_envs):
-            raise ValueError(f'Action batch_size ({action.shape[0]}) != active_envs ({len(self.active_envs)})')
     
     def _create_env_status(self, done_list):
         """Create environment status array efficiently."""
-        env_status = [0] * self.env.n_envs  # More efficient than list comprehension
-        
+        env_status = [0] * self.env.n_envs  # indicate that 0 is already finished env in previous round
+
         # Set active environments to status 2
         for idx in self.active_envs:
             env_status[idx] = 2
@@ -204,16 +192,15 @@ class MultiStepWrapper(gym.Wrapper):
         return env_status
     
     def _aggregate_current_info(self):
-        """Aggregate info from all environments efficiently."""
-        if not any(self.info):  # Early exit if no info
+        """Aggregate info from all environments.
+        The input of the aggregate_current_info from the outer self.info[idx] shoule be 
+        simple dict without any subdict inside
+        """
+        if not any(self.info): 
             return {}
             
-        # Collect all keys efficiently
-        all_keys = set()
-        for info_dict in self.info:
-            all_keys.update(info_dict.keys())
+        all_keys = self.info[0].keys()
         
-        # Build aggregated info with list comprehension
         aggregated_info = {
             key: [self.info[env_idx].get(key, None) for env_idx in range(self.n_envs)]
             for key in all_keys
@@ -222,12 +209,28 @@ class MultiStepWrapper(gym.Wrapper):
         return aggregated_info
 
     def _get_obs(self, n_steps=1):
-        """Get stacked observations efficiently."""
+        """Get stacked observations for all envs from the deque saving recent observations
+            meta_data of observation got from pushT_env.py:
+            {
+                'envs_idx': torch.Tensor, 
+                'image': torch.Tensor(envs_idx * 3 * (*render_size)), 
+                'agent_pos': torch.Tensor(envs_idx * 2)
+            }
+            Former meta shape is one element inside the self.obs[envs_idx][idx] 
+            which represent the observation for <envs_idx> at the <idx> action time step 
+
+            output:{
+                'envs_idx': torch.Tensor, (envs_idx * n_steps)
+                'image': torch.Tensor(envs_idx * n_steps * 3 * (*render_size)), 
+                'agent_pos': torch.Tensor(envs_idx * n_steps * 2)
+            } 
+        """
+
         if self.n_envs == 0 or not all(len(obs_deque) > 0 for obs_deque in self.obs):
             raise RuntimeError("No observation data available")
-        
-        # Get sample observation using direct deque access (no list conversion)
-        sample_obs = self.obs[0][-1]
+                
+        # Get an sample observation from the deque for determining the key to iterate
+        sample_obs = self.obs[0][0]
         
         if not isinstance(sample_obs, dict):
             raise TypeError("Observation Space should be dict type!")
@@ -236,7 +239,7 @@ class MultiStepWrapper(gym.Wrapper):
         
         # Process each observation key
         for key in sample_obs.keys():
-            # Pre-allocate list for better performance
+
             env_observations = []
             
             # Extract observations for all environments
@@ -244,9 +247,10 @@ class MultiStepWrapper(gym.Wrapper):
                 # Direct deque access instead of list comprehension
                 key_obs_history = [obs[key] for obs in self.obs[env_idx]]
                 stacked_obs = stack_last_n_obs(key_obs_history, n_steps)
-                env_observations.append(stacked_obs)
+                # ensure the observations stacked for different env is separated
+                # inside different list could be stacked to turn into a batch
+                env_observations.append(stacked_obs) 
             
-            # Stack observations (type determined once per key)
             if isinstance(env_observations[0], torch.Tensor):
                 result[key] = torch.stack(env_observations, dim=0)
             else:
@@ -254,7 +258,6 @@ class MultiStepWrapper(gym.Wrapper):
         
         return result
 
-# Utility functions for space creation
 def repeated_space(space, n):
     """Create repeated gym space for multi-step actions/observations."""
     if isinstance(space, spaces.Box):
@@ -277,7 +280,7 @@ def aggregate(data, method='max'):
 
     # Use dict for cleaner lookup - aggregate across dimension 0 (steps)
     aggregation_methods = {
-        'max': lambda x: torch.max(x, dim=0)[0],
+        'max': lambda x: torch.max(x, dim=0)[0], # use [0] to extract the value not the index
         'min': lambda x: torch.min(x, dim=0)[0],
         'mean': lambda x: torch.mean(x, dim=0),
         'sum': lambda x: torch.sum(x, dim=0)
@@ -292,12 +295,12 @@ def aggregate(data, method='max'):
         raise ValueError(f"Failed to aggregate data with method '{method}': {e}")
 
 def stack_last_n_obs(all_obs, n_steps):
-    """Stack last n observations, duplicating if insufficient history."""
+    """Stack last n observations, duplicating if insufficient history.
+        args: 
+            all_obs: list - including all the observation data in one type extracted from self.obs deque
+    """
+
     assert len(all_obs) > 0, "No observations available for stacking"
-    
-    # Convert to list only if necessary
-    if not isinstance(all_obs, list):
-        all_obs = list(all_obs)
         
     sample_obs = all_obs[-1]
     n_available = len(all_obs)
@@ -307,16 +310,15 @@ def stack_last_n_obs(all_obs, n_steps):
         result = torch.zeros((n_steps,) + sample_obs.shape, 
                            dtype=sample_obs.dtype, device=sample_obs.device)
         
-        # Fill with available observations
         result[start_idx:] = torch.stack(all_obs[start_idx:], dim=0)
         
-        # Duplicate first available observation to fill missing history
+        # fill the observation using the last observation available now
         if n_steps > n_available:
-            result[:start_idx] = result[start_idx]
+            last_obs = result[start_idx]
+            for i in range(0, n_steps + start_idx):  # start_idx is negative
+                result[i] = last_obs
     else:
-        result = np.zeros((n_steps,) + sample_obs.shape, dtype=sample_obs.dtype)
-        result[start_idx:] = np.array(all_obs[start_idx:])
-        if n_steps > n_available:
-            result[:start_idx] = result[start_idx]
+        raise TypeError("<Error!> [multistep_wrapper_parallel.py] Check env observation type inside each key is torch.Tensor " \
+        "for simpler transformation.")
             
     return result
