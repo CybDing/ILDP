@@ -172,6 +172,7 @@ def test():
     zarr_path = '../data/train_data/pusht/pusht_train_0920.zarr'
     zarr_path = '../data/train_data/pusht/pusht_cchi_v7_replay.zarr'
     zarr_path = '../data/train_data/pusht/genesis_data_20250921_004830.zarr' 
+    # zarr_path = '../data/train_data/pusht/genesis_data_merged_20250925_015354.zarr' 
     
     dataset = PushTImageDataset(zarr_path, horizon=16)
     print("Total sequences stored in Replay buffer: ", len(dataset))
@@ -180,7 +181,7 @@ def test():
 
     print("action sequence:  ", dataset.__getitem__(10)['action'])
     # print("agent_pos sequence:  ", dataset.__getitem__(0)['obs']['agent_pos'])
-    # print("imgs dim: ", dataset.__getitem__(0)['obs']['image'])
+    print("imgs dim: ", dataset.__getitem__(0)['obs']['image'].shape)
     normalizer = dataset.get_normalizer(mode='limits')
 
     # print("normalizer stat: \n", normalizer.get_input_stats()['action'], normalizer.get_output_stats())
@@ -191,7 +192,7 @@ def test():
 
     # Add visualization after existing test code
     # print("\nVisualizing images...")
-    visualize_sequence_images(dataset, idx=3000, max_frames=16)
+    # visualize_sequence_images(dataset, idx=3000, max_frames=16)
     
     # # Display a single frame
     # sample = dataset.__getitem__(-30)

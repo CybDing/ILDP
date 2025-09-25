@@ -13,6 +13,7 @@ from genesis_ILDP.utils.cuda import to_torch
 from genesis_ILDP.dataset.pusht_image_dataset import PushTImageDataset
 # Import from diffusion_policy for standard components
 from diffusion_policy.model.common.normalizer import LinearNormalizer
+from diffusion_policy.model.vision.crop_randomizer import CropRandomizer
 
 # Encoding dimensions
 dim_time_ebd = 128
@@ -38,6 +39,8 @@ class ActionDiffusionImagePolicy(BaseImagePolicy):
                  encode_agent_pos: bool = False,  # Whether to encode agent_pos with MLP
                  ddim_steps: int = None,  # Number of DDIM steps (if None, auto-calculate)
                  noise_intensity: float = 0.0,  # DDIM noise intensity
+                 crop_shape = (3, 76, 76),  # Crop dimensions (height, width) for random cropping
+                 enable_crop = True,  # Whether to enable random cropping for data augmentation
                  **kwargs):
         super().__init__()
         
@@ -47,6 +50,7 @@ class ActionDiffusionImagePolicy(BaseImagePolicy):
         self.action_dim = action_shape[0]
 
         obs_shape_meta = shape_meta['obs']
+        raw_img_shape = shape_meta['obs']['image']['shape'] # get the original image shape discarding the channel at the last position
         # Validate expected observation keys
         assert 'image' in obs_shape_meta, "ActionDiffusionImagePolicy requires 'image' in observations"
         assert 'agent_pos' in obs_shape_meta, "ActionDiffusionImagePolicy requires 'agent_pos' in observations"
@@ -60,6 +64,24 @@ class ActionDiffusionImagePolicy(BaseImagePolicy):
         self.encode_agent_pos = encode_agent_pos
         self.ddim_steps = ddim_steps
         self.noise_intensity = noise_intensity
+        self.enable_crop = enable_crop
+        self.crop_shape = crop_shape
+
+        if self.enable_crop:
+            # Extract spatial dimensions for validation (assuming shape is [C, H, W])
+            input_height, input_width = raw_img_shape[1], raw_img_shape[2]  # Skip channel dimension
+            crop_height, crop_width = crop_shape[1], crop_shape[2]  # Skip channel dimension
+
+            # Validate crop dimensions against spatial dimensions only
+            if crop_height > input_height or crop_width > input_width:
+                raise ValueError(f"Crop spatial dims ({crop_height}, {crop_width}) cannot be larger than input spatial dims ({input_height}, {input_width})")
+
+            self.cropper = CropRandomizer(input_shape=raw_img_shape, crop_height=crop_height,
+                                          crop_width=crop_width, num_crops=1, pos_enc=False)
+            print(f"Random cropping enabled: {raw_img_shape} -> crop ({crop_height}, {crop_width})")
+        else:
+            self.cropper = None
+            print(f"Random cropping disabled, using full image: {raw_img_shape}")
 
         # Calculate global feature dimension based on encoding choice
         img_encoding_dim = 1024 # 1024 
@@ -137,6 +159,39 @@ class ActionDiffusionImagePolicy(BaseImagePolicy):
 
         else:
             raise ValueError(f"Unknown scheduler mode: {cur_mode}")
+
+    def _apply_crop(self, images: torch.Tensor, training: bool = True) -> torch.Tensor:
+        """
+        Apply cropping to images if enabled.
+
+        Args:
+            images: Input images tensor of shape (B, C, H, W)
+            training: If True, apply random cropping. If False, apply center cropping.
+
+        Returns:
+            Cropped images tensor of shape (B, C, crop_height, crop_width)
+        """
+        if not self.enable_crop or self.cropper is None:
+            return images
+
+        # Debug: Print input shape
+        print(f"_apply_crop: Input images shape: {images.shape}, training: {training}")
+
+        # Ensure cropper is on the same device as images
+        if hasattr(self.cropper, 'to'):
+            self.cropper = self.cropper.to(images.device)
+
+        if training:
+            self.cropper.train()  # Random cropping
+        else:
+            self.cropper.eval()   # Center cropping
+
+        cropped_images = self.cropper(images)
+
+        # Debug: Print output shape
+        print(f"_apply_crop: Output images shape: {cropped_images.shape}")
+
+        return cropped_images
 
     # ========== BaseImagePolicy Interface ==========
     
@@ -260,7 +315,9 @@ class ActionDiffusionImagePolicy(BaseImagePolicy):
 
         # Encode observations and time
         t_encoding = torch.stack([self.time_encoding(t.item()) for t in random_t], dim=0)
-        imgs_encoding = self.imgs_encoding_net(imgs_stack).reshape(batch_size, -1)
+        # Apply cropping before vision encoding (training mode)
+        imgs_cropped = self._apply_crop(imgs_stack, training=True)
+        imgs_encoding = self.imgs_encoding_net(imgs_cropped).reshape(batch_size, -1)
 
         if self.encode_agent_pos:
             pos_encoding = self.agent_pos_encoding(agent_pos_stack).reshape(batch_size, -1)
@@ -290,7 +347,9 @@ class ActionDiffusionImagePolicy(BaseImagePolicy):
         imgs_batched = imgs.reshape(-1, *imgs.shape[2:])
         pos_batched = agent_pos.reshape(-1, *agent_pos.shape[2:])
 
-        imgs_features_batched = self.imgs_encoding_net(imgs_batched)
+        # Apply cropping before vision encoding (inference mode)
+        imgs_cropped = self._apply_crop(imgs_batched, training=False)
+        imgs_features_batched = self.imgs_encoding_net(imgs_cropped)
 
         if self.encode_agent_pos:
             pos_features_batched = self.agent_pos_encoding(pos_batched)
@@ -371,8 +430,10 @@ class ActionDiffusionImagePolicy(BaseImagePolicy):
             
         imgs_batched = imgs.reshape(-1, *imgs.shape[2:])
         pos_batched = agent_pos.reshape(-1, *agent_pos.shape[2:])
-        
-        imgs_features_batched = self.imgs_encoding_net(imgs_batched)
+
+        # Apply cropping before vision encoding (inference mode)
+        imgs_cropped = self._apply_crop(imgs_batched, training=False)
+        imgs_features_batched = self.imgs_encoding_net(imgs_cropped)
 
         if self.encode_agent_pos:
             pos_features_batched = self.agent_pos_encoding(pos_batched)

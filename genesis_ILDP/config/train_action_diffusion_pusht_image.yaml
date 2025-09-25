@@ -40,6 +40,8 @@ policy:
   n_action_steps: ${n_action_steps}
   n_obs_steps: ${n_obs_steps}
   obs_steps: ${n_obs_steps}    # For your custom ActionDiffusion model
+  enable_crop: true
+  crop_shape: [76, 76]
   
   # Diffusion parameters (standard settings)
   diff_steps: 300              # Number of diffusion steps
