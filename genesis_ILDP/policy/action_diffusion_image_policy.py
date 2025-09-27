@@ -143,18 +143,22 @@ class ActionDiffusionImagePolicy(BaseImagePolicy):
             return betas, cum_alphas
 
         elif cur_mode == 'Cosine':
+            # Create cosine schedule starting from timestep 1 to match other schedulers
             f_t = [np.cos((timestep / self.diff_steps + s) / (1 + s) * np.pi / 2) ** 2
-                   for timestep in range(self.diff_steps)]
+                   for timestep in range(1, self.diff_steps + 1)]
             f_0 = np.cos(s / (1 + s) * np.pi / 2) ** 2
 
-            tilde_alpha_t = [f / f_0 for f in f_t]
-            alphas = [tilde_alpha_t[0]]
+            # Calculate cum_alphas (these are the alpha_bar values)
+            cum_alphas_list = [f / f_0 for f in f_t]
 
-            for i in range(1, len(tilde_alpha_t)):
-                alphas.append(tilde_alpha_t[i] / tilde_alpha_t[i-1])
+            # Calculate individual alphas from cum_alphas
+            alphas = [cum_alphas_list[0]]  # alpha_1 = alpha_bar_1
+            for i in range(1, len(cum_alphas_list)):
+                alphas.append(cum_alphas_list[i] / cum_alphas_list[i-1])
 
             betas = torch.Tensor([1 - alpha for alpha in alphas], device=device)
-            cum_alphas = torch.Tensor(tilde_alpha_t, device=device)
+            betas = torch.clamp(betas, max=0.999)  # Clip beta to prevent alpha from becoming 0
+            cum_alphas = torch.Tensor(cum_alphas_list, device=device)
             return betas, cum_alphas
 
         else:
@@ -302,14 +306,16 @@ class ActionDiffusionImagePolicy(BaseImagePolicy):
         agent_pos_stack = agent_pos.reshape(-1, *agent_pos.shape[2:])  # (B*To, 2)
 
         # Sample random timestep and noise
-        random_t = torch.randint(0, self.diff_steps, (batch_size,), device=action.device)
+        # Sample timesteps from 1 to diff_steps, then convert to array indices
+        random_t = torch.randint(1, self.diff_steps + 1, (batch_size,), device=action.device)
         random_noise = torch.randn_like(action)
 
         # Add noise to actions (forward diffusion process)
         # Ensure cum_alphas is on the same device as the action tensor
         cum_alphas_device = self.cum_alphas.to(action.device)
-        sqrt_alpha_cumprod = torch.sqrt(cum_alphas_device[random_t]).reshape(batch_size, 1, 1)
-        sqrt_one_minus_alpha_cumprod = torch.sqrt(1 - cum_alphas_device[random_t]).reshape(batch_size, 1, 1)
+        # Convert timesteps to array indices: timestep t uses index t-1
+        sqrt_alpha_cumprod = torch.sqrt(cum_alphas_device[random_t - 1]).reshape(batch_size, 1, 1)
+        sqrt_one_minus_alpha_cumprod = torch.sqrt(1 - cum_alphas_device[random_t - 1]).reshape(batch_size, 1, 1)
         
         noisy_action = sqrt_alpha_cumprod * action + sqrt_one_minus_alpha_cumprod * random_noise
 
@@ -366,16 +372,25 @@ class ActionDiffusionImagePolicy(BaseImagePolicy):
             pos_features = pos_features_batched.reshape(batch_size, self.n_obs_steps * 2)
 
         # Initialize with random noise
-        print(f"action_generation_ddpm: batch_size={batch_size}, traj_shape={self.traj_shape}")
+        # print(f"action_generation_ddpm: batch_size={batch_size}, traj_shape={self.traj_shape}")
         predicted_trajs = torch.randn(size=(batch_size, *self.traj_shape), device=imgs.device)
-        print(f"action_generation_ddpm: predicted_trajs initial shape={predicted_trajs.shape}")
+        # print(f"action_generation_ddpm: predicted_trajs initial shape={predicted_trajs.shape}")
 
         # Move scheduler tensors to the correct device
         betas_device = self.betas.to(imgs.device)
         cum_alphas_device = self.cum_alphas.to(imgs.device)
 
-        # Reverse diffusion process
-        for t in reversed(range(self.diff_steps)):
+        # DEBUG: Print scheduler info for DDPM
+        # print(f"DDPM Sampling Debug Info:")
+        # print(f"  Scheduler mode: {self.scheduler_mode}")
+        # print(f"  Diffusion steps: {self.diff_steps}")
+        # print(f"  cum_alphas min/max: {cum_alphas_device.min().item():.8e} / {cum_alphas_device.max().item():.8e}")
+        # print(f"  betas min/max: {betas_device.min().item():.8e} / {betas_device.max().item():.8e}")
+        # print(f"  Smallest 5 cum_alphas: {cum_alphas_device.sort()[0][:5]}")
+        # print(f"  Initial predicted_trajs range: [{predicted_trajs.min().item():.3f}, {predicted_trajs.max().item():.3f}]")
+
+        # Reverse diffusion process from diff_steps down to 1 (timesteps)
+        for step_idx, t in enumerate(reversed(range(1, self.diff_steps + 1))):
             # Time encoding
             t_features = torch.stack([self.time_encoding(t).to(device=imgs.device)
                                     for _ in range(batch_size)], dim=0)
@@ -386,20 +401,60 @@ class ActionDiffusionImagePolicy(BaseImagePolicy):
             predicted_noise = self.conditioned_unet(traj_input, global_features_t)
             predicted_noise_t = predicted_noise.transpose(1, 2).contiguous()  # (B, T, Da)
 
-            if t > 0:
+            # # DEBUG: Print values that could cause NaN
+            # if step_idx < 5 or t < 10 or torch.isnan(predicted_trajs).any():
+            #     print(f"DDPM Step {step_idx}, timestep {t}:")
+            #     print(f"  cum_alphas[t]: {cum_alphas_device[t-1].item():.8e}")
+            #     print(f"  betas[t]: {betas_device[t-1].item():.8e}")
+            #     print(f"  alpha_t (1-beta): {(1 - betas_device[t-1]).item():.8e}")
+            #     print(f"  sqrt(1 - cum_alphas[t]): {torch.sqrt(1 - cum_alphas_device[t-1]).item():.8e}")
+            #     print(f"  predicted_trajs has NaN: {torch.isnan(predicted_trajs).any()}")
+            #     print(f"  predicted_noise_t has NaN: {torch.isnan(predicted_noise_t).any()}")
+            #     print(f"  predicted_trajs range: [{predicted_trajs.min().item():.3f}, {predicted_trajs.max().item():.3f}]")
+            #     print(f"  predicted_noise_t range: [{predicted_noise_t.min().item():.3f}, {predicted_noise_t.max().item():.3f}]")
+
+            if t > 1:
                 # Standard DDPM update
-                alpha_t = 1 - betas_device[t]
+                # Timestep t uses array index t-1
+                alpha_t = 1 - betas_device[t-1]
                 coeff1 = 1.0 / torch.sqrt(alpha_t)
-                coeff2 = betas_device[t] / torch.sqrt(1 - cum_alphas_device[t])
+                coeff2 = betas_device[t-1] / torch.sqrt(1 - cum_alphas_device[t-1])
                 mean = coeff1 * (predicted_trajs - coeff2 * predicted_noise_t)
 
-                variance = betas_device[t] * (1 - cum_alphas_device[t-1]) / (1 - cum_alphas_device[t])
+                # Variance calculation: cum_alphas at timestep t-1 and t-2
+                variance = betas_device[t-1] * (1 - cum_alphas_device[t-2]) / (1 - cum_alphas_device[t-1])
+
+                # # DEBUG: Check coefficients for problematic values
+                # if step_idx < 5 or t < 10 or torch.isnan(predicted_trajs).any():
+                #     print(f"  coeff1 (1/sqrt(alpha_t)): {coeff1.item():.8e}")
+                #     print(f"  coeff2 (beta/sqrt(1-cum_alpha)): {coeff2.item():.8e}")
+                #     print(f"  variance: {variance.item():.8e}")
+                #     print(f"  mean has NaN: {torch.isnan(mean).any()}")
+                #     if torch.isnan(mean).any():
+                #         print(f"  mean range: [{mean.min().item():.3f}, {mean.max().item():.3f}]")
+
                 noise = torch.randn_like(predicted_trajs)
                 predicted_trajs = mean + torch.sqrt(variance) * noise
             else:
-                # Final step (deterministic)
-                alpha_t = 1 - betas_device[t]
-                predicted_trajs = (predicted_trajs - betas_device[t] / torch.sqrt(1 - cum_alphas_device[t]) * predicted_noise_t) / torch.sqrt(alpha_t)
+                # Final step (deterministic): timestep t=1, no more noise to add
+                # For t=1, we predict x_0 directly without adding noise
+                # Special case: previous timestep is t=0 which has cum_alphas = 1.0
+                alpha_t = 1 - betas_device[t-1]  # t=1 uses index 0
+                coeff1 = 1.0 / torch.sqrt(alpha_t)
+                coeff2 = betas_device[t-1] / torch.sqrt(1 - cum_alphas_device[t-1])
+                predicted_trajs = coeff1 * (predicted_trajs - coeff2 * predicted_noise_t)
+
+                # # DEBUG: Check final step coefficients
+                # print(f"  FINAL STEP - timestep {t}")
+                # print(f"  FINAL STEP - alpha_t: {alpha_t.item():.8e}")
+                # print(f"  FINAL STEP - coeff1: {coeff1.item():.8e}")
+                # print(f"  FINAL STEP - coeff2: {coeff2.item():.8e}")
+
+            # DEBUG: Final check after update
+            if torch.isnan(predicted_trajs).any():
+                print(f"  ❌ NaN detected in predicted_trajs after DDPM step {step_idx}!")
+                print(f"  Breaking early to prevent propagation...")
+                break
         
         action_dict = {"action": predicted_trajs}
         action_unnormalized = self.normalizer.unnormalize(action_dict)
@@ -419,13 +474,14 @@ class ActionDiffusionImagePolicy(BaseImagePolicy):
         """DDIM sampling for faster action generation."""
         if sample_steps is None:
             # Optimal step selection: uniform spacing for better coverage
+            # DDIM uses actual timesteps, which go from 1 to diff_steps
             num_steps = min(20, max(10, self.diff_steps // 15))  # 10-20 steps
-            sample_steps = np.linspace(0, self.diff_steps - 1, num_steps, dtype=int).tolist()
+            sample_steps = np.linspace(1, self.diff_steps, num_steps, dtype=int).tolist()
             sample_steps = sorted(set(sample_steps))  # Remove duplicates and ensure sorted
         elif isinstance(sample_steps, int):
             # If integer provided, create that many evenly spaced steps
             num_steps = min(sample_steps, self.diff_steps)
-            sample_steps = np.linspace(0, self.diff_steps - 1, num_steps, dtype=int).tolist()
+            sample_steps = np.linspace(1, self.diff_steps, num_steps, dtype=int).tolist()
             sample_steps = sorted(set(sample_steps))  # Remove duplicates and ensure sorted
             
         imgs_batched = imgs.reshape(-1, *imgs.shape[2:])
@@ -450,32 +506,81 @@ class ActionDiffusionImagePolicy(BaseImagePolicy):
         # Move scheduler tensors to the correct device
         cum_alphas_device = self.cum_alphas.to(imgs.device)
 
+        # DEBUG: Print scheduler info
+        print(f"DDIM Sampling Debug Info:")
+        print(f"  Scheduler mode: {self.scheduler_mode}")
+        print(f"  Sample steps: {sample_steps}")
+        print(f"  Noise intensity: {noise_intensity}")
+        print(f"  cum_alphas min/max: {cum_alphas_device.min().item():.8e} / {cum_alphas_device.max().item():.8e}")
+        print(f"  Smallest 5 cum_alphas: {cum_alphas_device.sort()[0][:5]}")
+        print(f"  Initial predicted_trajs range: [{predicted_trajs.min().item():.3f}, {predicted_trajs.max().item():.3f}]")
+
         # DDIM reverse process
-        for i in reversed(sample_steps):
+        for step_idx, i in enumerate(reversed(sample_steps)):
             t_features = torch.stack([self.time_encoding(i).to(device=imgs.device)
                                     for _ in range(batch_size)], dim=0)
             global_features_t = merge_multimodal_encoding(imgs_features, pos_features, t_features)
-            
+
             traj_input = predicted_trajs.transpose(1, 2).contiguous()
             predicted_noise = self.conditioned_unet(traj_input, global_features_t)
             predicted_noise_t = predicted_noise.transpose(1, 2).contiguous()
 
             # DDIM update equations
-            alpha_cumprod_t = cum_alphas_device[i]
-            alpha_cumprod_prev = cum_alphas_device[i-1] if i > 0 else torch.tensor(1.0, device=imgs.device)
-            
+            # Arrays are 0-indexed for timesteps 1,2,...,diff_steps
+            # So timestep i uses index i-1
+            alpha_cumprod_t = cum_alphas_device[i-1]
+
+            # For previous timestep: if i > 1, use i-2; if i == 1, use alpha_0 = 1.0
+            if i > 1:
+                alpha_cumprod_prev = cum_alphas_device[i-2]
+            else:
+                alpha_cumprod_prev = torch.tensor(1.0, device=imgs.device)
+
+            # DEBUG: Print values that could cause NaN
+            if step_idx < 5 or i < 10 or torch.isnan(predicted_trajs).any():
+                print(f"DDIM Step {step_idx}, timestep {i}:")
+                print(f"  alpha_cumprod_t: {alpha_cumprod_t.item():.8e}")
+                print(f"  alpha_cumprod_prev: {alpha_cumprod_prev.item():.8e}")
+                print(f"  sqrt(alpha_cumprod_t): {torch.sqrt(alpha_cumprod_t).item():.8e}")
+                print(f"  1/sqrt(alpha_cumprod_t): {(1.0/torch.sqrt(alpha_cumprod_t)).item():.8e}")
+                print(f"  predicted_trajs has NaN: {torch.isnan(predicted_trajs).any()}")
+                print(f"  predicted_noise_t has NaN: {torch.isnan(predicted_noise_t).any()}")
+                print(f"  predicted_trajs range: [{predicted_trajs.min().item():.3f}, {predicted_trajs.max().item():.3f}]")
+                print(f"  predicted_noise_t range: [{predicted_noise_t.min().item():.3f}, {predicted_noise_t.max().item():.3f}]")
+
             # Predicted x0
-            pred_x0 = (predicted_trajs - torch.sqrt(1 - alpha_cumprod_t) * predicted_noise_t) / torch.sqrt(alpha_cumprod_t)
-            
+            sqrt_alpha_cumprod_t = torch.sqrt(alpha_cumprod_t)
+            sqrt_one_minus_alpha_cumprod_t = torch.sqrt(1 - alpha_cumprod_t)
+            pred_x0 = (predicted_trajs - sqrt_one_minus_alpha_cumprod_t * predicted_noise_t) / sqrt_alpha_cumprod_t
+
+            # DEBUG: Check pred_x0 for NaN
+            if torch.isnan(pred_x0).any() or step_idx < 5 or i < 10:
+                print(f"  pred_x0 has NaN: {torch.isnan(pred_x0).any()}")
+                print(f"  pred_x0 range: [{pred_x0.min().item():.3f}, {pred_x0.max().item():.3f}]")
+
             # Direction towards x_t
-            if i > 0:
-                noise_factor = noise_intensity * torch.sqrt(1 - alpha_cumprod_prev - (1 - alpha_cumprod_t) * (alpha_cumprod_prev / alpha_cumprod_t))
+            if i > 1:  # Not the final step (timestep 1)
+                ratio_term = (1 - alpha_cumprod_t) * (alpha_cumprod_prev / alpha_cumprod_t)
+                sqrt_term = 1 - alpha_cumprod_prev - ratio_term
+
+                # DEBUG: Check for negative sqrt
+                if sqrt_term < 0:
+                    print(f"  WARNING: sqrt_term is negative: {sqrt_term.item():.8e}")
+
+                noise_factor = noise_intensity * torch.sqrt(torch.clamp(sqrt_term, min=0.0))
                 direction_xt = torch.sqrt(1 - alpha_cumprod_prev - noise_factor**2) * predicted_noise_t
-                
+
                 random_noise = torch.randn_like(predicted_trajs) if noise_intensity > 0 else 0
                 predicted_trajs = torch.sqrt(alpha_cumprod_prev) * pred_x0 + direction_xt + noise_factor * random_noise
             else:
+                # Final step: timestep 1 -> 0, deterministic
                 predicted_trajs = pred_x0
+
+            # DEBUG: Final check after update
+            if torch.isnan(predicted_trajs).any():
+                print(f"  ❌ NaN detected in predicted_trajs after step {step_idx}!")
+                print(f"  Breaking early to prevent propagation...")
+                break
 
         action_dict = {"action": predicted_trajs}
         action_unnormalized = self.normalizer.unnormalize(action_dict)

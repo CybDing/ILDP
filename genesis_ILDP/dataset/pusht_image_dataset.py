@@ -192,7 +192,7 @@ def test():
 
     # Add visualization after existing test code
     # print("\nVisualizing images...")
-    # visualize_sequence_images(dataset, idx=3000, max_frames=16)
+    visualize_sequence_images(dataset, idx=30, max_frames=16)
     
     # # Display a single frame
     # sample = dataset.__getitem__(-30)

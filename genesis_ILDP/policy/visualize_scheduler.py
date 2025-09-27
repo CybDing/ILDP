@@ -17,12 +17,14 @@ shape_meta = {
         } 
     }
 }
-policy = ActionDiffusionImagePolicy(shape_meta=shape_meta)
+policy = ActionDiffusionImagePolicy(shape_meta=shape_meta, diff_steps=300)
 
 _, betas_scheduler_linear = policy.NoiseScheduler(mode='Linear')
-_, betas_scheduler_root_linear = policy.NoiseScheduler(mode='RootLinear')
-_, betas_scheduler_cosine = policy.NoiseScheduler(mode='Cosine')
-
+betas_scheduler_root_linear_real, betas_scheduler_root_linear = policy.NoiseScheduler(mode='RootLinear')
+betas_scheduler_cosine_real, betas_scheduler_cosine = policy.NoiseScheduler(mode='Cosine')
+print("beta inside the root linear scheduler", betas_scheduler_cosine_real)
+print("Cum alphas from the Root linear scheduler: ", betas_scheduler_root_linear[-1])
+# print(betas_scheduler_root_linear_real.dtype)
 plt.figure(figsize=(8, 8))
 
 counts = betas_scheduler_cosine.shape[0]

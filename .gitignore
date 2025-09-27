@@ -48,7 +48,7 @@ TODO.md
 
 test/
 video/
-model/
+# model/
 
 data/
 backup/
@@ -58,4 +58,6 @@ backup/
 
 .DS_Store
 test*
-debug* 
+debug*
+
+diffusion*

@@ -329,7 +329,7 @@ class PushTEnv(gym.Env):
         #                             quat=torch.tensor([0, 0, 1, 0]).repeat(num_reset, 1), 
         #                             envs_idx = envs_idx)[:, 0:7]
         # print(home_pos_down)
-        home_pos_down = torch.tensor([-0.4602,  1.3013,  2.5882,  1.1296,  0.7087,  0.6787,  1.2742], device=gs.device).repeat(self.n_envs, 1)
+        home_pos_down = torch.tensor([-0.4602,  1.3013,  2.5882,  1.1296,  0.7087,  0.6787,  1.2742], device=gs.device).repeat(len(envs_idx), 1)
         # home_pos_down = torch.tensor([-0.3794,  1.3189,  2.6545,  1.5788,  1.0798,  1.0309,  0.8671]).repeat(self.n_envs, 1)
 
         # home_pos_down = torch.Tensor([[ 2.5060, -1.5572, -0.5973,  2.4180,  2.3973,  0.5915, -0.9210]]).repeat(self.n_envs, 1)
@@ -384,6 +384,9 @@ class PushTEnv(gym.Env):
         if envs_idx is None:
             envs_idx = torch.arange(self.n_envs, device=gs.device, dtype=torch.int32)
 
+        # Always maintain full environment indexing for consistent tensor shapes
+        all_envs_idx = torch.arange(self.n_envs, device=gs.device, dtype=torch.int32)
+
         # print("envs_idx", envs_idx)
         n_steps = int(self.sim_hz // self.control_hz)
         if action is not None:
@@ -398,8 +401,8 @@ class PushTEnv(gym.Env):
                                         dofs_idx_local=self.robot_dofs_idx[0:7], 
                                         envs_idx=envs_idx
                                         )
-            self.robot.set_dofs_position(position=torch.zeros(self.n_envs, len(self.robot_dofs_idx) - 7),
-                                        dofs_idx_local=self.robot_dofs_idx[7:], 
+            self.robot.set_dofs_position(position=torch.zeros(len(envs_idx), len(self.robot_dofs_idx) - 7),
+                                        dofs_idx_local=self.robot_dofs_idx[7:],
                                         envs_idx=envs_idx,
                                         )      
             # make sure the action predicted is smooth, no need for using plan for executing the action sequence
@@ -410,8 +413,9 @@ class PushTEnv(gym.Env):
         steps = 0
         for _ in range(n_steps):
             self.scene.step()
-            if (steps+1) % 3 == 0: # make sure that the frames being rendered is at about 30 fps 
-                observation = self._get_obs(rgb=True, envs_idx=envs_idx) # render less for faster simulation 
+            if (steps+1) % 3 == 0: # make sure that the frames being rendered is at about 30 fps
+                # Always get observations for ALL environments to maintain consistent indexing
+                observation = self._get_obs(rgb=True, envs_idx=all_envs_idx) # render less for faster simulation 
             steps = steps + 1
         # for point in waypoints:
         #     self.robot.control_dofs_position(position=point[:, 0:7], # does not control tcp joints
@@ -420,7 +424,8 @@ class PushTEnv(gym.Env):
         #                                 )   
         #     self.scene.step()
 
-        self._get_poses(envs_idx) # get Tpos, agent_pos
+        # Always get poses for ALL environments to maintain consistent indexing
+        self._get_poses(all_envs_idx) # get Tpos, agent_pos for all envs
         self.calculate_all_keypoints()
 
         # print("eef pose: ", self.poses['agent_pos'][0,:2])
