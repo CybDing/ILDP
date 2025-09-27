@@ -35,6 +35,7 @@ class PushTImageRunner(BaseImageRunner):
                  n_test_vis = 10,
                  n_obs_steps = 2,
                  n_action_steps = 8,
+                 diff_steps = 300,  # Number of diffusion steps
                  max_steps=200,
                  image_shape=(96, 96),
                  tqdm_interval_sec=1.0,
@@ -78,6 +79,7 @@ class PushTImageRunner(BaseImageRunner):
         self.n_test_vis = min(self.n_test, n_test_vis)
         self.n_obs_steps = n_obs_steps
         self.n_action_steps = n_action_steps
+        self.diff_steps = diff_steps
         self.device = device
         self.max_steps = max_steps
         self.enable_past_action = enable_past_action
@@ -114,8 +116,10 @@ class PushTImageRunner(BaseImageRunner):
         # policy.reset()  # Reset states for stateful policy
         done = False
 
+        # Calculate tqdm interval based on diff_steps // n_action_steps
+        calculated_interval = self.diff_steps // self.n_action_steps
         pbar = tqdm.tqdm(total=self.max_steps * self.n_envs, desc=f"Eval PushTImageRunner",
-                             leave=False, mininterval=self.tqdm_interval_sec)
+                             leave=False, mininterval=calculated_interval)
         
         if self.enable_render: 
             self.env.start_recording()
@@ -171,7 +175,17 @@ class PushTImageRunner(BaseImageRunner):
                     self._update_past_action(Active_action)
 
                 obs, active_envs_idx = self._process_info(obs, reward, info, done)
-                print(done)
+
+                # # CRITICAL FIX: Sync with wrapper's active environment list
+                # wrapper_active_envs = self.env.active_envs.copy()
+                # if active_envs_idx != wrapper_active_envs:
+                #     print(f"WARNING: Active env mismatch!")
+                #     print(f"Runner active_envs: {active_envs_idx}")
+                #     print(f"Wrapper active_envs: {wrapper_active_envs}")
+                #     active_envs_idx = wrapper_active_envs
+
+                # print(f"Final active_envs_idx: {active_envs_idx}")
+                # print(done)
                 if 2 not in done:
                     is_done = True
                 pbar.update(1)  # Update by 1 step since all envs run together

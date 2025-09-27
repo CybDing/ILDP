@@ -93,7 +93,7 @@ class PushTEnv(gym.Env):
             backend = gs.gpu
         )
         self.scene = gs.Scene(
-            show_FPS=True,
+            show_FPS=False,
             sim_options=gs.options.SimOptions(dt=1./self.sim_hz, substeps=1),
             viewer_options=gs.options.ViewerOptions(
                 max_FPS=30,
@@ -433,7 +433,9 @@ class PushTEnv(gym.Env):
 
         ### judge after one control action with n_steps numebr of sim steps, preventing misjudge the done condition
         # observation = self._get_obs(rgb=True, envs_idx=envs_idx)
-        info = self._get_info(envs_idx)
+        
+        info = self._get_info(all_envs_idx) # calculate the info for the inactive envs again for 
+        # consistency and we only grep the active envs idx value
         
         done = [ratio > self.done_ratio for ratio in self._cal_intersection()]
         reward = self._cal_rewards()

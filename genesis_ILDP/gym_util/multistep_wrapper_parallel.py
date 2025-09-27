@@ -118,12 +118,12 @@ class MultiStepWrapper(gym.Wrapper):
             #     done_is_array = isinstance(done, (list, np.ndarray, torch.Tensor))
             
             # Process all environments in batch
-            for i, env_idx in enumerate(self.active_envs):
-                # Extract data using unified function
-                env_obs = self._extract_env_data(observation, i)
-                env_reward = reward[i] 
-                env_done = done[i] 
-                env_info = self._extract_env_data(info, i)
+            for env_idx in self.active_envs:
+                # Extract data using unified function - use env_idx instead of i for correct indexing
+                env_obs = self._extract_env_data(observation, env_idx)
+                env_reward = reward[env_idx]
+                env_done = done[env_idx]
+                env_info = self._extract_env_data(info, env_idx)
                 
                 # Update environment state
                 self.obs[env_idx].append(env_obs)
@@ -178,7 +178,6 @@ class MultiStepWrapper(gym.Wrapper):
     
     
     def _create_env_status(self, done_list):
-        """Create environment status array efficiently."""
         env_status = [0] * self.env.n_envs  # indicate that 0 is already finished env in previous round
 
         # Set active environments to status 2
