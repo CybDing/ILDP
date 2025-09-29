@@ -42,10 +42,11 @@ class TrainActionDiffusionImageWorkspace(BaseWorkspace):
         super().__init__(cfg, output_dir=output_dir)
 
         device = torch.device(cfg.training.device)
+        # device = torch.device("mps:0")  # Comment out hardcoded MPS setting
         seed = cfg.training.seed
 
         # Create CPU generator for DataLoader (multiprocessing compatibility)
-        self.generator = torch.Generator(device=device)  # Remove device parameter - defaults to CPU
+        self.generator = torch.Generator()  # Use CPU generator for multiprocessing compatibility
         self.generator.manual_seed(seed)
 
         np.random.seed(seed)

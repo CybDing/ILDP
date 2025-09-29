@@ -4,8 +4,8 @@
 _target_: genesis_ILDP.workspace.train_action_diffusion_image_workspace.TrainActionDiffusionImageWorkspace
 
 # === EXPERIMENT SETTINGS ===
-exp_name: "action_diffusion_pusht_image"
-task_name: pusht_image
+exp_name: "action_diffusion_pusht_image_Cosine_with_Crop"
+task_name: pusht_image_ddpm
 name: train_action_diffusion_image
 
 # === STANDARD DIFFUSION PARAMETERS (same as original diffusion_policy) ===
@@ -41,11 +41,11 @@ policy:
   n_obs_steps: ${n_obs_steps}
   obs_steps: ${n_obs_steps}    # For your custom ActionDiffusion model
   enable_crop: true
-  crop_shape: [76, 76]
+  crop_shape: [3, 86, 86]
   
   # Diffusion parameters (standard settings)
-  diff_steps: 300              # Number of diffusion steps
-  scheduler_mode: 'Linear'     # Your custom scheduler mode
+  diff_steps: 100              # Number of diffusion steps
+  scheduler_mode: 'Cosine'     # Your custom scheduler mode
   # num_inference_steps: 100     # Inference steps
 
   # Encoding settings (IMPORTANT for performance)
@@ -53,8 +53,8 @@ policy:
   vision_backbone: 'resnet18'  # Vision backbone
 
   # DDIM settings for inference (training uses DDPM)
-  ddim_steps: 15               # Number of DDIM steps for inference
-  noise_intensity: 0.0         # DDIM noise intensity (0.0=deterministic)
+  # ddim_steps: 15               # Number of DDIM steps for inference
+  # noise_intensity: 0.0         # DDIM noise intensity (0.0=deterministic)
 
   # Note: Your ActionDiffusionImagePolicy uses custom noise scheduler
   # The diffusers scheduler is commented out to use your implementation
@@ -68,38 +68,40 @@ task:
   dataset:
     _target_: genesis_ILDP.dataset.pusht_image_dataset.PushTImageDataset
     # zarr_path: genesis_ILDP/data/train_data/pusht/pusht_cchi_v7_replay.zarr
-    zarr_path: genesis_ILDP/data/train_data/pusht/pusht_train_0920.zarr
+    zarr_path: genesis_ILDP/data/train_data/merged_data_0925.zarr
     horizon: ${horizon}
     pad_before: ${eval:'${n_obs_steps}-1'}     # 1
     pad_after: ${eval:'${n_action_steps}-1'}   # 7  
     seed: 42
     val_ratio: 0.05
-    max_train_episodes: 90
+    max_train_episodes: 128
   
   # Environment runner (optional for training, but good for evaluation)
   env_runner:
     _target_: genesis_ILDP.env_runner.pusht_image_runner.PushTImageRunner
     output_dir: ${multi_run.run_dir}
     fps: 30
-    max_steps: 300
+    max_steps: 600
     n_action_steps: ${n_action_steps}
     n_obs_steps: ${n_obs_steps}
-    diff_steps: ${policy.diff_steps}
-    n_test: 50
-    n_test_vis: 4
-    n_train: 6
-    n_train_vis: 2
-    past_action: ${past_action_visible}
-    test_start_seed: 100000
+    n_test: 10
+    n_test_vis: 10
+    n_train: 5  
+    n_train_vis: 5
+    # past_action: ${past_action_visible}
+    test_start_seed: 50000
     train_start_seed: 0
     n_envs: null
+    enable_past_action: False
+    enable_render: True
+    done_ratio: 0.7
 
 # === TRAINING CONFIGURATION ===  
 training:
   seed: 42
-  device: mps:0
-  num_epochs: 600             # Standard training epochs
-  batch_size: 100               # Batch size
+  device: cuda:0
+  num_epochs: 500             # Standard training epochs
+  batch_size: 128               # Batch size
   
   # Learning and optimization
   lr_scheduler: cosine
@@ -108,7 +110,7 @@ training:
   
   # Checkpointing and evaluation
   checkpoint_every: 50         # Save checkpoint every 50 epochs
-  val_every: 1                 # Validate every epoch  
+  val_every: 5                 # Validate every epoch  
   rollout_every: 50            # Run environment rollout every 50 epochs
   sample_every: 5              # Sample predictions every 5 epochs
   
@@ -133,14 +135,14 @@ optimizer:
 # === DATA LOADING ===
 dataloader:
   batch_size: ${training.batch_size}
-  num_workers: 0  
+  num_workers: 8
   persistent_workers: false
   pin_memory: true
   shuffle: true
 
 val_dataloader:
   batch_size: ${training.batch_size}
-  num_workers: 0
+  num_workers: 8
   persistent_workers: false
   pin_memory: true
   shuffle: false
@@ -173,9 +175,9 @@ logging:
   tags:
     - action_diffusion_image
     - pusht_image
-    - genesis_ILDP
+    - genesis
   id: null
-  resume: true
+  resume: false
 
 # === OUTPUT CONFIGURATION ===
 multi_run:

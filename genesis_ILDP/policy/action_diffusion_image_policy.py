@@ -6,7 +6,7 @@ import tqdm
 import genesis as gs
 
 # Import from genesis_ILDP custom components
-from genesis_ILDP.model.conditioned_unet import Unet
+from genesis_ILDP.model.vision.conditioned_unet import Unet
 from genesis_ILDP.model.encoding import global_img_encoding, time_encoding, pos_encoding, merge_multimodal_encoding
 from genesis_ILDP.policy.base_image_policy import BaseImagePolicy
 from genesis_ILDP.utils.cuda import to_torch
@@ -208,13 +208,20 @@ class ActionDiffusionImagePolicy(BaseImagePolicy):
         imgs = obs_dict['image']
         agent_pos = obs_dict['agent_pos']
 
-        # Debug print to understand input shapes during rollout
-        print(f"predict_action input shapes - imgs: {imgs.shape}, agent_pos: {agent_pos.shape}")
+        # # Debug print to understand input shapes during rollout
+        # print(f"predict_action input shapes - imgs: {imgs.shape}, agent_pos: {agent_pos.shape}")
+        # print(f"imgs.ndim: {imgs.ndim}, expected 5D, last dim: {imgs.shape[-1] if imgs.ndim > 0 else 'N/A'}")
 
         if len(imgs.shape) == 5 and imgs.shape[-1] == 3:
             print(f"Converting image dimensions from {imgs.shape} to channels-first format")
             imgs = imgs.permute(0, 1, 4, 2, 3)  # [B, T, H, W, C] -> [B, T, C, H, W]
             print(f"After conversion: {imgs.shape}")
+        elif len(imgs.shape) == 4:
+            print(f"WARNING: Unexpected 4D image tensor: {imgs.shape}")
+            print(f"Expected 5D: [batch, time, height, width, channels] but got 4D")
+            print("This suggests missing width dimension in environment observation!")
+        else:
+            print(f"WARNING: Unexpected image tensor shape: {imgs.shape} (expected 5D)")
 
         # 2) Trim to expected observation steps
         if imgs.shape[1] > self.n_obs_steps:
@@ -394,11 +401,24 @@ class ActionDiffusionImagePolicy(BaseImagePolicy):
             # Time encoding
             t_features = torch.stack([self.time_encoding(t).to(device=imgs.device)
                                     for _ in range(batch_size)], dim=0)
+
+            # # DEBUG: Print dimensions for debugging
+            # print(f"[DEBUG DDPM] imgs_features.shape: {imgs_features.shape}")
+            # print(f"[DEBUG DDPM] pos_features.shape: {pos_features.shape}")
+            # print(f"[DEBUG DDPM] t_features.shape: {t_features.shape}")
+            # print(f"[DEBUG DDPM] Expected total: {imgs_features.shape[1] + pos_features.shape[1] + t_features.shape[1]}")
+
             global_features_t = merge_multimodal_encoding(imgs_features, pos_features, t_features)
-            
+            # print(f"[DEBUG DDPM] global_features_t.shape: {global_features_t.shape}")
+
             # Predict noise
             traj_input = predicted_trajs.transpose(1, 2).contiguous()  # (B, Da, T)
             predicted_noise = self.conditioned_unet(traj_input, global_features_t)
+
+            # DEBUG: Exit after first iteration to avoid spam
+            # if step_idx == 0:
+            #     print(f"[DEBUG] Dimension mismatch identified - breaking after first step")
+            #     break
             predicted_noise_t = predicted_noise.transpose(1, 2).contiguous()  # (B, T, Da)
 
             # # DEBUG: Print values that could cause NaN

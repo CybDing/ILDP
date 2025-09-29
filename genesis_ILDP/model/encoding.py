@@ -69,7 +69,7 @@ class global_img_encoding(nn.Module):
         return self.encoded_dim
     
 
-def time_encoding(t, t_emb_dim=256):
+def time_encoding(t, t_emb_dim=128): # TODO make params changeable in config.yaml file
     half_embedding_dim = t_emb_dim // 2
     base_freq = torch.tensor([1 / (10000 ** ((2 * i) / t_emb_dim)) for i in range(half_embedding_dim)])
     

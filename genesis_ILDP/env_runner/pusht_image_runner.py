@@ -12,7 +12,6 @@ import time
 import shutil
 import wandb.sdk.data_types.video as wv
 from genesis_ILDP.env.pushT_env import PushTEnv
-from genesis_ILDP.gym_util.async_vector_env import AsyncVectorEnv
 from genesis_ILDP.gym_util.multistep_wrapper_parallel import MultiStepWrapper # new wrapper
 
 # from genesis_ILDP.policy.base_image_policy import BaseImagePolicy
@@ -35,7 +34,7 @@ class PushTImageRunner(BaseImageRunner):
                  n_test_vis = 10,
                  n_obs_steps = 2,
                  n_action_steps = 8,
-                 diff_steps = 300,  # Number of diffusion steps
+                 diff_steps = 100,  # Number of diffusion steps
                  max_steps=200,
                  image_shape=(96, 96),
                  tqdm_interval_sec=1.0,
@@ -100,6 +99,11 @@ class PushTImageRunner(BaseImageRunner):
         self.episode_info = dict()
         self.max_reward = [None for _ in range(self.n_envs)]
 
+        # Timestep tracking for completion analysis
+        self.episode_timesteps = [0] * self.n_envs  # Current timesteps per environment
+        self.completion_timesteps = [None] * self.n_envs  # Record completion timesteps
+        self.global_timestep = 0  # Global step counter across all envs
+
     def run(self, policy):
         """Run evaluation with the given policy and return logging data."""
         
@@ -117,9 +121,9 @@ class PushTImageRunner(BaseImageRunner):
         done = False
 
         # Calculate tqdm interval based on diff_steps // n_action_steps
-        calculated_interval = self.diff_steps // self.n_action_steps
-        pbar = tqdm.tqdm(total=self.max_steps * self.n_envs, desc=f"Eval PushTImageRunner",
-                             leave=False, mininterval=calculated_interval)
+        # calculated_interval = self.diff_steps // self.n_action_steps
+        pbar = tqdm.tqdm(total=self.max_steps//self.n_action_steps, desc=f"Eval PushTImageRunner",
+                             leave=False)
         
         if self.enable_render: 
             self.env.start_recording()
@@ -170,6 +174,11 @@ class PushTImageRunner(BaseImageRunner):
                 print(f"Rollout action shape: {action.shape}, expected batch size: {len(Active_action['envs_idx'])}")
                       
                 obs, reward, done, info = self.env.step(Active_action)
+
+                # Update timestep tracking
+                self.global_timestep += 1
+                for env_idx in active_envs_idx:
+                    self.episode_timesteps[env_idx] += 1
 
                 if self.enable_past_action:
                     self._update_past_action(Active_action)
@@ -227,9 +236,8 @@ class PushTImageRunner(BaseImageRunner):
                 self.past_action[i].append(None)
 
     def _setup_envs(self,):
-        # TODO should refine this initializing process inside the wrapper function without directly callout the start function from api env
-        # which might be inconsistent with current configuration 
-        self.env.start(n_envs=self.n_envs, env_separate=True, show_interact_viewer = False)
+        # TODO could add an api function integrating the full envs control inside the wrapper without referring back to the original env function 
+        self.env.start(n_envs=self.n_envs, env_separate=False, show_interact_viewer = False)
         print(f"------SETUP COMPLETE!------\
               \n Configuration:  n_test={self.n_test},  n_train={self.n_train}, \
               n_envs={self.n_envs}\n max_steps={self.max_steps}")
@@ -341,6 +349,10 @@ class PushTImageRunner(BaseImageRunner):
                 active_env_indices.append(i)
             
             if env_status[i] == 1: # save for terminated envs
+                # Record global timestep when this environment completed
+                self.completion_timesteps[i] = self.global_timestep
+                print(f"Environment {i} completed at global timestep {self.global_timestep}")
+
                 for key in self.info.keys():
                     if key == 'envs_idx': continue
                     if reward[i] is None: raise ValueError("Reward saving error!")
@@ -368,27 +380,37 @@ class PushTImageRunner(BaseImageRunner):
     def _create_log_data(self):
         """Create logging data from collected episode information."""
         max_rewards = collections.defaultdict(list)
+        completion_times = collections.defaultdict(list)
         log_data = dict()
-    
+
         for i in range(self.n_envs):
             seed = self.env_seeds[i]
             if i < self.n_train:
                 prefix = 'train/'
                 should_upload_video = i < self.n_train_vis
-            else: 
+            else:
                 prefix = 'test/'
                 test_idx = i - self.n_train
                 should_upload_video = test_idx < self.n_test_vis
-            
-            # Calculate max reward for this episode    
+
+            # Calculate max reward for this episode
             if len(self.episode_reward[i]) > 0:
                 max_reward = np.max(np.array(self.episode_reward[i]))
             else:
                 max_reward = 0.0
                 print(f"Warning: No rewards collected for env {i}")
-            
+
             max_rewards[prefix].append(max_reward)
             log_data[prefix + f'sim_max_reward_{seed}'] = max_reward
+
+            # Add completion timestep data
+            if self.completion_timesteps[i] is not None:
+                completion_times[prefix].append(self.completion_timesteps[i])
+                log_data[prefix + f'completion_timesteps_{seed}'] = self.completion_timesteps[i]
+                log_data[prefix + f'success_{seed}'] = True
+            else:
+                log_data[prefix + f'completion_timesteps_{seed}'] = None
+                log_data[prefix + f'success_{seed}'] = False
     
             # Add video logs if available
             if should_upload_video and self.file_path is not None and i < len(self.file_path):
@@ -412,7 +434,31 @@ class PushTImageRunner(BaseImageRunner):
             else:
                 log_data[prefix + 'mean_score'] = 0.0
                 print(f"Warning: No rewards for {prefix}")
-    
+
+        # Calculate completion time and success statistics
+        for prefix, times in completion_times.items():
+            total_episodes = len(max_rewards[prefix])
+            successful_episodes = len(times)
+
+            if successful_episodes > 0:
+                # Completion time statistics
+                log_data[prefix + 'completion_time_mean'] = np.mean(times)
+                log_data[prefix + 'completion_time_std'] = np.std(times)
+                log_data[prefix + 'completion_time_min'] = np.min(times)
+                log_data[prefix + 'completion_time_max'] = np.max(times)
+                log_data[prefix + 'completion_time_median'] = np.median(times)
+
+                print(f"Completion times for {prefix}: mean={np.mean(times):.1f}, std={np.std(times):.1f}")
+            else:
+                log_data[prefix + 'completion_time_mean'] = None
+                log_data[prefix + 'completion_time_std'] = None
+                print(f"Warning: No successful completions for {prefix}")
+
+            # Success rate
+            success_rate = successful_episodes / total_episodes if total_episodes > 0 else 0.0
+            log_data[prefix + 'success_rate'] = success_rate
+            print(f"Success rate for {prefix}: {success_rate:.2%} ({successful_episodes}/{total_episodes})")
+
         return log_data
 
 if __name__ == "__main__":
@@ -421,9 +467,4 @@ if __name__ == "__main__":
         Runner = PushTImageRunner(output_dir)
         policy = TestPolicy(Runner.n_action_steps)
         Runner.run(policy)
-
-
-
-
-
-
+        

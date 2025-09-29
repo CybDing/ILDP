@@ -80,7 +80,7 @@ class FiLMLayer(nn.Module):
 class Unet(nn.Module):
     def __init__(self, dim_global_features, input_dim=2):
         super().__init__()
-        channels = [input_dim, 32, 64, 128, 256]
+        channels = [input_dim, 256, 512, 1024]
         
         self.down_convs = nn.ModuleList()
         self.down_samples = nn.ModuleList()

@@ -1,6 +1,7 @@
 import torch
 import numpy as np
 import torch.nn as nn 
+from genesis_ILDP.model.common.mask_gen import *
 
 class Feedforward(nn.Module):
     # input dim (batch, sequence_len, d_model)
@@ -105,7 +106,7 @@ class _attn(nn.Module):
 
         Cor_masked = Cor_x + mask        
 
-        scale = torch.sqrt(torch.tensor(self.d_heads, device = query.device, dtype=torch.float32))
+        scale = torch.sqrt(torch.tensor(self.heads, device = query.device, dtype=torch.float32))
         attn_raw = self.softmax(Cor_masked / scale) @ V_x # output shape (batch_size, n_heads, seq_len, d_heads)
         attn = torch.transpose(attn_raw, dim0=1, dim1=2).reshape(batch_size, -1, self.d_model)
         
@@ -123,7 +124,7 @@ class Encoder(nn.Module):
     def forward(self, x, x_mask):
         # the mask sz: (seq_len, seq_len)
         for i in range(self.n_layers):
-            x = self.MultiheadAttention[i](x = x, x_mask = x_mask, src = None, memory_mask = None)
+            x = self.MultiheadAttention[i](x = x, x_mask = x_mask, src = None, src_mask = None)
         return x
     
 class Decoder(nn.Module):
@@ -136,12 +137,13 @@ class Decoder(nn.Module):
         self.MultiHeadSelfAttention = nn.ModuleList([MultiHeadAttentionBlock(d_model, heads, src=False) for _ in range(self.n_layers)])
         self.MultiHeadCrossAttention = nn.ModuleList([MultiHeadAttentionBlock(d_model, heads, src=True) for _ in range(self.n_layers)])
 
-    def forward(self, x, memory, x_mask, memory_mask):
+    def forward(self, x, x_mask, src, src_mask):
         for i in range(self.n_layers):
-            x = self.MultiHeadSelfAttention[i](x = x, x_mask = x_mask, src = None, memory_mask = None)
-            x = self.MultiHeadCrossAttention[i](x = x, x_mask = x_mask, src = memory, memory_mask = memory_mask)        
+            x = self.MultiHeadSelfAttention[i](x = x, x_mask = x_mask, src = None, src_mask = None)
+            x = self.MultiHeadCrossAttention[i](x = x, x_mask = x_mask, src = src, src_mask = src_mask)        
         return x
     
+# TODO add dropout for the transformer layers value passing 
 class Encoder_Decoder(nn.Module):
     def __init__(self, n_layers_encoder, n_layers_decoder, 
                  enc_in_dim, dec_in_dim, dec_out_horizon, 
@@ -174,38 +176,88 @@ class Encoder_Decoder(nn.Module):
             return self.embedding_enc(x)
         else:
             return self.embedding_dec(x)
+        
+    def _inv_emb(self, x, ):
+        """
+        Param:
+            x: (batch_size, seq_len, d_model)
+        Return:
+            inv_x: (batch_size, seq_len, dec_emb)
+        """
+        return self.inverse_embedding_dec(x)
+        
+    def _get_src(self, cond, cond_mask=None):
+        src = self.encoder(cond, cond_mask)
+        return src;
     
-    def _predict_seq(self, x, memory, memory_mask, x_mask=None):
+    def predict_onetime_seq(self, x, cond, x_mask=None, cond_mask=None):
+        """
+        predict_onetime_seq is special designed for training. 
+
+        Param: x: the answer to the prediction seq which is right moved for predicting the next token
+               cond: the cond used for encoding src and help prediction 
+               x_mask: [None] It should be None since we use causal mask for almost any case. A default causal mask is applied.
+               cond_mask: [(batch_sz, cond_len, cond_len)] 
+        """
+
+        if x_mask is not None: 
+            raise ValueError("Only support training using causal mask!")
+        
+        if x.shape[1] != self.horizon:
+            raise ValueError("Training input inconsisent with expected output length")
+        
+        if x.shape[2] != self.dec_in_dim:
+            raise ValueError("The in_dim from the decoder does not match the embedding for decoder shape")
+        
+        x = self._emb(x, is_enc=False) # embed the decoder input
+        cond = self._emb(cond, is_enc=True) # embed the encoder input
+
+        memory = self.encoder(cond, cond_mask)
+        x_input = torch.concatenate([
+            self.SOS, 
+            x[:, :-1, :] # discard the last value and add the initial symbol for predicting 
+        ], dim=1)
+        output_emb = self._predict_full_seq(x_input, src=memory, x_mask=None, src_mask=cond_mask)
+
+        output = self._inv_emb(output_emb)
+        return output
+
+    def _predict_full_seq(self, x, src, x_mask=None, src_mask=None):
         # the x mask should be the causal mask if enable the causal mask, 
         # or if the mask is None and not in causal mode, the mask should be dummy
         x_len = x.shape[-2] # used to generate the correct mask shape
         if x_mask is None and self.is_causal:
             x_mask = self.causal_mask[:x_len, :x_len]
-        output = self.decoder(x, memory, x_mask, memory_mask)
+        elif x_mask is None:
+            x_mask = DummyMask(width=self.horizon, height=self.horizon)
+        else:
+            assert x_mask.shape == (self.horizon, self.horizon)
+        
+        output = self.decoder(x = x, x_mask=x_mask, src=src, src_mask=src_mask)
         return output
     
-    def _predict_token(self, x, memory, memory_mask, x_mask=None):
-        output = self._predict_seq(x,  memory, memory_mask, x_mask)
-        return output[:, -1, :] # return the last token which is our prediction for the next token in embedded dim 
+    def _predict_last_token(self, x, src, x_mask=None, src_mask=None):
+        output = self._predict_seq(x, src=src, x_mask=x_mask, src_mask=src_mask)
+
+        # return the last token which is our prediction for the next token in embedded dim 
+        return output[:, -1, :] 
     
-    def get_gen_seq(self, cond, x, cond_mask, memory_mask):
+    def gen_seq(self, cond, x_mask=None, cond_mask=None, src_mask=None):
+        """
+        gen_seq is used for forward pass for predicting a full action sequence from cond, and used cond_mask, x_mask, src_mask
+        """
         memory = self.encoder(cond, cond_mask)
         batch_size = memory.shape[0]
         x = self.SOS.repeat(batch_size, 1, 1)
+        memory_mask = src_mask 
 
         for _ in range(self.horizon):
-            token_new = self._predict_token(x, memory, memory_mask, x_mask = None) # let the causal mask generated itself   
+            token_new = self._predict_last_token(x=x, src=memory, x_mask = None, src_mask=memory_mask) # Use the default causal mask 
             x = torch.concatenate(
                 (x, token_new), 
-                dim=-2
+                dim=1
             )
+        output_raw = x[:, 1:, :] # remove the first sos from the action sequence
 
-        inversed_emd_seq = self.inverse_embedding_dec(x)
-        return inversed_emd_seq
-    
-    def get_out_seq(self, x, memory, memory_mask, x_mask=None):
-        raw_seq = self._predict_seq(x, memory, memory_mask, x_mask)
-        inversed_emd_seq = self.inverse_embedding_dec(raw_seq)
-
-        return inversed_emd_seq
-
+        output = self.inverse_embedding_dec(output_raw)
+        return output
