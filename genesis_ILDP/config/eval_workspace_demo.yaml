@@ -1,0 +1,70 @@
+# === EVALUATION CONFIGURATION ===
+# This config is ONLY for evaluation runtime parameters
+# All model/policy/dataset settings come from the checkpoint
+
+# === CHECKPOINT PATH ===
+checkpoint_path: ./outputs/2024.09.30/14.30.00_action_diffusion/checkpoints/latest.ckpt
+
+# === EVALUATION RUNTIME SETTINGS ===
+# Device override (can differ from training)
+device: cuda:0               # Options: cuda:0, cpu, mps:0
+
+# Output directory for evaluation results
+output_dir: eval_workspace_outputs/${now:%Y.%m.%d}/${now:%H.%M.%S}_eval
+
+# === ENVIRONMENT RUNNER PARAMETERS ===
+# These override the env_runner settings from checkpoint
+env_runner:
+  # Test episodes
+  n_test: 50                 # Number of test episodes to run
+  n_test_vis: 20             # Number of test videos to save
+  test_start_seed: 100000    # Starting seed for reproducibility
+
+  # Training episodes (usually 0 for eval-only)
+  n_train: 0                 # Number of training episodes (0 for eval)
+  n_train_vis: 0             # Number of training videos
+  train_start_seed: 0
+
+  # Episode settings
+  max_steps: 300             # Maximum steps per episode
+  fps: 30                    # Video FPS for rendering
+  enable_render: true        # Enable video recording
+
+# === LOGGING ===
+logging:
+  mode: disabled             # wandb: 'online', 'offline', or 'disabled'
+  project: genesis_ILDP_eval
+  group: eval_workspace
+  name: eval_${now:%Y.%m.%d-%H.%M.%S}
+
+# ============================================================================
+# USAGE:
+# ============================================================================
+# This config does NOT contain model/policy settings.
+# Those are loaded from the checkpoint automatically.
+#
+# Usage example (see eval.py or workspace usage):
+#
+#   import torch, dill, hydra
+#   from omegaconf import OmegaConf
+#
+#   # 1. Load checkpoint to get model config
+#   eval_cfg = OmegaConf.load('config/eval_workspace_demo.yaml')
+#   payload = torch.load(eval_cfg.checkpoint_path, pickle_module=dill,
+#                        map_location=eval_cfg.device)
+#
+#   # 2. Use checkpoint's config (has model/policy/dataset settings)
+#   model_cfg = payload['cfg']
+#
+#   # 3. Create workspace from checkpoint's _target_
+#   cls = hydra.utils.get_class(model_cfg._target_)
+#   workspace = cls(model_cfg, output_dir=eval_cfg.output_dir)
+#   workspace.load_payload(payload)
+#
+#   # 4. Run evaluation with runtime overrides
+#   results = workspace.run(runner_params=eval_cfg.env_runner)
+#
+# Command line (if using a wrapper script):
+#   python eval_with_config.py --config-name eval_workspace_demo \
+#     device=cuda:1 env_runner.n_test=100
+# ============================================================================

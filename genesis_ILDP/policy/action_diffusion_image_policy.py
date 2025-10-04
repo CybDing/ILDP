@@ -4,6 +4,7 @@ import torch.nn as nn
 import numpy as np
 import tqdm
 import genesis as gs
+from typing import Union
 
 from genesis_ILDP.model.vision.conditioned_unet import Unet
 from genesis_ILDP.model.vision.encoding import global_img_encoding, time_encoding, pos_encoding, merge_multimodal_encoding
@@ -18,11 +19,6 @@ from diffusion_policy.model.vision.crop_randomizer import CropRandomizer
 # dim_time_ebd = 128
 # dim_imgs_ebd = 1024  # per observation step
 # dim_agentPos_ebd = 512  # per observation step
-
-
-# For n_obs_steps=2: time(256) + imgs(2*1024) + agent_pos(2*512) = 256 + 2048 + 1024 = 3328
-# n_obs_steps_default = 2
-# dim_global_features = dim_time_ebd + (dim_imgs_ebd + dim_agentPos_ebd) * n_obs_steps_default  # 3328
 
 
 class ActionDiffusionImagePolicy(BaseImagePolicy):
@@ -201,7 +197,7 @@ class ActionDiffusionImagePolicy(BaseImagePolicy):
 
         return cropped_images
 
-    def predict_action(self, obs_dict: Dict[str, torch.Tensor]) -> Dict[str, torch.Tensor]:
+    def predict_action(self, obs_dict: Dict[str, torch.Tensor], recording_diffusion) -> Dict[str, torch.Tensor]:
         """
         Predict actions given observations.
         """
@@ -250,7 +246,7 @@ class ActionDiffusionImagePolicy(BaseImagePolicy):
         # action_pred = self.action_generation_ddim(nimgs, nagent_pos, batch_size,
         #                                          sample_steps=ddim_steps, noise_intensity=noise_intensity)
 
-        action_pred = self.action_generation_ddpm(nimgs, nagent_pos, batch_size)
+        action_pred = self.action_generation_ddpm(nimgs, nagent_pos, batch_size, recording_diffusion)
 
         # Extract action steps for execution (typically the first n_action_steps)
         start = self.n_obs_steps - 1
@@ -351,7 +347,8 @@ class ActionDiffusionImagePolicy(BaseImagePolicy):
         loss = torch.nn.functional.mse_loss(predicted_noise, random_noise)
         return loss
     
-    def action_generation_ddpm(self, imgs, agent_pos, batch_size):
+    def action_generation_ddpm(self, imgs, agent_pos, batch_size, recording_diffusion = False)\
+        -> Union[torch.Tensor, tuple]:
         """DDPM sampling for action generation."""
         # Validate input shapes
         imgs_steps = imgs.shape[1]
@@ -389,16 +386,11 @@ class ActionDiffusionImagePolicy(BaseImagePolicy):
         betas_device = self.betas.to(imgs.device)
         cum_alphas_device = self.cum_alphas.to(imgs.device)
 
-        # DEBUG: Print scheduler info for DDPM
-        # print(f"DDPM Sampling Debug Info:")
-        # print(f"  Scheduler mode: {self.scheduler_mode}")
-        # print(f"  Diffusion steps: {self.diff_steps}")
-        # print(f"  cum_alphas min/max: {cum_alphas_device.min().item():.8e} / {cum_alphas_device.max().item():.8e}")
-        # print(f"  betas min/max: {betas_device.min().item():.8e} / {betas_device.max().item():.8e}")
-        # print(f"  Smallest 5 cum_alphas: {cum_alphas_device.sort()[0][:5]}")
-        # print(f"  Initial predicted_trajs range: [{predicted_trajs.min().item():.3f}, {predicted_trajs.max().item():.3f}]")
+        if recording_diffusion:
+            action_buffer = [predicted_trajs] # which will hold for (B, horizons, Da)           
 
         # Reverse diffusion process from diff_steps down to 1 (timesteps)
+
         for step_idx, t in enumerate(reversed(range(1, self.diff_steps + 1))):
             # Time encoding
             t_features = torch.stack([self.time_encoding(t).to(device=imgs.device)
@@ -417,23 +409,7 @@ class ActionDiffusionImagePolicy(BaseImagePolicy):
             traj_input = predicted_trajs.transpose(1, 2).contiguous()  # (B, Da, T)
             predicted_noise = self.conditioned_unet(traj_input, global_features_t)
 
-            # DEBUG: Exit after first iteration to avoid spam
-            # if step_idx == 0:
-            #     print(f"[DEBUG] Dimension mismatch identified - breaking after first step")
-            #     break
             predicted_noise_t = predicted_noise.transpose(1, 2).contiguous()  # (B, T, Da)
-
-            # # DEBUG: Print values that could cause NaN
-            # if step_idx < 5 or t < 10 or torch.isnan(predicted_trajs).any():
-            #     print(f"DDPM Step {step_idx}, timestep {t}:")
-            #     print(f"  cum_alphas[t]: {cum_alphas_device[t-1].item():.8e}")
-            #     print(f"  betas[t]: {betas_device[t-1].item():.8e}")
-            #     print(f"  alpha_t (1-beta): {(1 - betas_device[t-1]).item():.8e}")
-            #     print(f"  sqrt(1 - cum_alphas[t]): {torch.sqrt(1 - cum_alphas_device[t-1]).item():.8e}")
-            #     print(f"  predicted_trajs has NaN: {torch.isnan(predicted_trajs).any()}")
-            #     print(f"  predicted_noise_t has NaN: {torch.isnan(predicted_noise_t).any()}")
-            #     print(f"  predicted_trajs range: [{predicted_trajs.min().item():.3f}, {predicted_trajs.max().item():.3f}]")
-            #     print(f"  predicted_noise_t range: [{predicted_noise_t.min().item():.3f}, {predicted_noise_t.max().item():.3f}]")
 
             if t > 1:
                 # Standard DDPM update
@@ -446,37 +422,21 @@ class ActionDiffusionImagePolicy(BaseImagePolicy):
                 # Variance calculation: cum_alphas at timestep t-1 and t-2
                 variance = betas_device[t-1] * (1 - cum_alphas_device[t-2]) / (1 - cum_alphas_device[t-1])
 
-                # # DEBUG: Check coefficients for problematic values
-                # if step_idx < 5 or t < 10 or torch.isnan(predicted_trajs).any():
-                #     print(f"  coeff1 (1/sqrt(alpha_t)): {coeff1.item():.8e}")
-                #     print(f"  coeff2 (beta/sqrt(1-cum_alpha)): {coeff2.item():.8e}")
-                #     print(f"  variance: {variance.item():.8e}")
-                #     print(f"  mean has NaN: {torch.isnan(mean).any()}")
-                #     if torch.isnan(mean).any():
-                #         print(f"  mean range: [{mean.min().item():.3f}, {mean.max().item():.3f}]")
-
                 noise = torch.randn_like(predicted_trajs)
                 predicted_trajs = mean + torch.sqrt(variance) * noise
             else:
-                # Final step (deterministic): timestep t=1, no more noise to add
-                # For t=1, we predict x_0 directly without adding noise
-                # Special case: previous timestep is t=0 which has cum_alphas = 1.0
                 alpha_t = 1 - betas_device[t-1]  # t=1 uses index 0
                 coeff1 = 1.0 / torch.sqrt(alpha_t)
                 coeff2 = betas_device[t-1] / torch.sqrt(1 - cum_alphas_device[t-1])
                 predicted_trajs = coeff1 * (predicted_trajs - coeff2 * predicted_noise_t)
-
-                # # DEBUG: Check final step coefficients
-                # print(f"  FINAL STEP - timestep {t}")
-                # print(f"  FINAL STEP - alpha_t: {alpha_t.item():.8e}")
-                # print(f"  FINAL STEP - coeff1: {coeff1.item():.8e}")
-                # print(f"  FINAL STEP - coeff2: {coeff2.item():.8e}")
+            if recording_diffusion:
+                action_buffer.append(predicted_trajs)  # append the predicted_trajs
 
             # DEBUG: Final check after update
             if torch.isnan(predicted_trajs).any():
                 print(f"  ❌ NaN detected in predicted_trajs after DDPM step {step_idx}!")
                 print(f"  Breaking early to prevent propagation...")
-                break
+                break        
         
         action_dict = {"action": predicted_trajs}
         action_unnormalized = self.normalizer.unnormalize(action_dict)
@@ -490,7 +450,13 @@ class ActionDiffusionImagePolicy(BaseImagePolicy):
                               dtype=predicted_trajs_unnormalized.dtype)
         predicted_trajs_with_const = torch.cat([predicted_trajs_unnormalized, const_dim], dim=-1)
         
-        return predicted_trajs_with_const
+        action_diffusion_buffer = torch.stack(action_buffer, dim=0).transpose(dim0=0, dim1=1)
+        # (diff_steps + 1, cur_envs, horizons, Da) -> (cur_envs, diff_steps + 1, horizons, Da)
+        
+        if not recording_diffusion:
+            return predicted_trajs_with_const
+        else: 
+            return (predicted_trajs_with_const, action_diffusion_buffer)
     
     def action_generation_ddim(self, imgs, agent_pos, batch_size, sample_steps=None, noise_intensity=0.0):
         """DDIM sampling for faster action generation."""

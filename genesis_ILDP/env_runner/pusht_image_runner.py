@@ -48,7 +48,8 @@ class PushTImageRunner(BaseImageRunner):
                  # does not reach 100000 episodes
                  enable_render = False,
                  max_envs_running = 3,
-                 done_ratio = 0.85
+                 done_ratio = 0.85, 
+                 episode_recording = False, 
                  ):
         super().__init__(output_dir)
         if n_envs is None:
@@ -59,19 +60,7 @@ class PushTImageRunner(BaseImageRunner):
             print(f"Using provided n_envs: {self.n_envs}")
 
         self.parallel_envs_counts = min(max_envs_running, self.n_envs) 
-        self.env = MultiStepWrapper(
-                    PushTEnv(
-                        render_size=image_shape,
-                        fps = fps,
-                        show_fps=False,
-                        device=device, 
-                        done_ratio=done_ratio
-                    ),
-                n_obs_steps=n_obs_steps,
-                n_action_steps=n_action_steps,
-                max_episode_steps=max_steps,
-                n_envs = self.n_envs
-            )
+        
         self.n_train = n_train
         self.n_test = n_test
         self.n_train_vis = min(self.n_train, n_train_vis)
@@ -100,22 +89,101 @@ class PushTImageRunner(BaseImageRunner):
         self.max_reward = [None for _ in range(self.n_envs)]
 
         # Timestep tracking for completion analysis
-        self.episode_timesteps = [0] * self.n_envs  # Current timesteps per environment
+        # self.episode_timesteps = [0] * self.n_envs  # Current timesteps per environment
         self.completion_timesteps = [None] * self.n_envs  # Record completion timesteps
         self.global_timestep = 0  # Global step counter across all envs
+
+        self.episode_recording = episode_recording # whether to enable recording the trajectories details
+        # for fine-tuning usage
+
+        # Per-environment temporary buffers (store data during episode rollout)
+        self.diffusion_action_buffer = [[] for _ in range(self.n_envs)]  # per-env diffusion actions
+        self.env_obs_buffer = [[] for _ in range(self.n_envs)]  # per-env observations (unnormalized)
+        self.env_reward_buffer = [[] for _ in range(self.n_envs)]  # per-env rewards
+
+        # Global episode buffer (accumulates completed episodes)
+        self.episode_buffer = {
+            'obs': {
+                'img': [],  # Will store unnormalized or normalized obs depending on convenience
+                'agent_pos': [],
+            },
+            'action': [],  # Stores NORMALIZED diffusion actions (diff_steps+1, horizons, Da)
+            'reward': [],
+            'episode_ends': []  # Records global_step index where each episode ends
+        }
+        """
+        Shape meta for the episode buffer:
+
+        [global_steps are concatenating the episodes together along the step axis, and use the
+        episode_ends to indicate at which global_step each episode has ended]
+
+        Data format details:
+            obs: (condition for diffusion process)
+                img: (global_steps, n_obs_steps, C, H, W) - UNNORMALIZED observations
+                agent_pos: (global_steps, n_obs_steps, Dp) - UNNORMALIZED agent positions
+
+            action: (global_steps, diff_steps+1, horizons, Da)
+                    - NORMALIZED diffusion actions (normalized in policy during training)
+                    - Includes the initial random noise step (index 0) through all denoising steps
+                    - Can be directly fed into diffusion model for computing action mean prediction
+                    [See action_diffusion_image_policy.py for diffusion process details]
+
+            reward: (global_steps,) - Raw reward values from environment
+
+            episode_ends: List[int] - Indices in global_steps where each episode ends
+                          e.g., [150, 320, 500] means:
+                          - Episode 0: steps 0-149
+                          - Episode 1: steps 150-319
+                          - Episode 2: steps 320-499
+                          Length equals number of completed episodes
+
+        Note: All data is stored on GPU for efficient computation during training/fine-tuning.
+        """
+
+        self.env = MultiStepWrapper(
+                    PushTEnv(
+                        render_size=image_shape,
+                        fps = fps,
+                        show_fps=False,
+                        device=device, 
+                        done_ratio=done_ratio
+                    ),
+                n_obs_steps=n_obs_steps,
+                n_action_steps=n_action_steps,
+                max_episode_steps=max_steps,
+                n_envs = self.n_envs, 
+                episode_recording = self.episode_recording
+            )
+
+    def _clean_buffer(self, ):
+        self.episode_buffer = {
+                'obs': {
+                    'img': [],
+                    'agent_pos': [],
+                },
+                'action': [], 
+                'reward': [],
+                'episode_ends': []  
+        } 
+        self.diffusion_action_buffer = [[] for _ in range(self.n_envs)]  #
+        self.env_obs_buffer = [[] for _ in range(self.n_envs)]  
+        self.env_reward_buffer = [[] for _ in range(self.n_envs)]  
+
+    def get_saved_trajectories(self, ):
+        return self.episode_buffer
 
     def run(self, policy):
         """Run evaluation with the given policy and return logging data."""
         
         self._prepare_env()
-        obs = self.env.reset() # return (parallel_envs_counts, obs_dict)
+        self._clean_buffer()
+
+        obs = self.env.reset() # return (n_envs, obs_dict)
 
         self.past_action = None
         # policy.reset()  # Reset states for stateful policy
         done = False
 
-        # Calculate tqdm interval based on diff_steps // n_action_steps
-        # calculated_interval = self.diff_steps // self.n_action_steps
         pbar = tqdm.tqdm(total=self.max_steps//self.n_action_steps, desc=f"Eval PushTImageRunner",
                              leave=False)
         
@@ -134,12 +202,30 @@ class PushTImageRunner(BaseImageRunner):
                     del obs_dict['envs_idx']
 
                 with torch.no_grad():
-                    action_dict = policy.predict_action(obs_dict)
+                    if not self.episode_recording:
+                        action_dict = policy.predict_action(obs_dict)
+                        current_diffusion_buffer = None
+                    else:
+                        action_dict, current_diffusion_buffer = policy.predict_action(obs_dict, recording_diffusion = True)
 
                 if isinstance(action_dict, dict):
                     action = action_dict['action']
                 else:
                     action = action_dict
+
+                # Store per-environment observations and diffusion actions before stepping
+                if self.episode_recording and current_diffusion_buffer is not None:
+                    for local_idx, env_idx in enumerate(active_envs_idx):
+                        # Store unnormalized observations (original from obs_dict before normalization in policy)
+                        self.env_obs_buffer[env_idx].append({
+                            'image': obs['image'][local_idx],  # Keep on GPU
+                            'agent_pos': obs['agent_pos'][local_idx]
+                        })
+                        # Store normalized diffusion actions (diff_steps+1, horizons, Da) on GPU
+                        self.diffusion_action_buffer[env_idx].append(current_diffusion_buffer[local_idx])
+
+                # record the last step observation and current action(note that we should pad for
+                # terminated envs their observations and actions)
 
                 envs_count = action.shape[0]
                 if envs_count != len(active_envs_idx):
@@ -149,29 +235,25 @@ class PushTImageRunner(BaseImageRunner):
                         'envs_idx': active_envs_idx,
                         'action': action
                     }
-                      
+
                 obs, reward, done, info = self.env.step(Active_action)
+
+                # Store rewards for active environments after stepping
+                if self.episode_recording:
+                    for local_idx, env_idx in enumerate(active_envs_idx):
+                        self.env_reward_buffer[env_idx].append(reward[env_idx])  # Keep on GPU
 
                 # Update timestep tracking
                 self.global_timestep += 1
-                for env_idx in active_envs_idx:
-                    self.episode_timesteps[env_idx] += 1
+                # for env_idx in active_envs_idx:
+                #     self.episode_timesteps[env_idx] += 1
 
                 if self.enable_past_action:
                     self._update_past_action(Active_action)
 
                 obs, active_envs_idx = self._process_info(obs, reward, info, done)
 
-                # # CRITICAL FIX: Sync with wrapper's active environment list
-                # wrapper_active_envs = self.env.active_envs.copy()
-                # if active_envs_idx != wrapper_active_envs:
-                #     print(f"WARNING: Active env mismatch!")
-                #     print(f"Runner active_envs: {active_envs_idx}")
-                #     print(f"Wrapper active_envs: {wrapper_active_envs}")
-                #     active_envs_idx = wrapper_active_envs
-
-                # print(f"Final active_envs_idx: {active_envs_idx}")
-                # print(done)
+                # the global ending condition for the rolling out
                 if 2 not in done:
                     is_done = True
                 pbar.update(1)  # Update by 1 step since all envs run together
@@ -346,13 +428,22 @@ class PushTImageRunner(BaseImageRunner):
 
             elif env_status[i] == 3:  # Natural success
                 # Record per-env timestep when this environment succeeded
-                self.completion_timesteps[i] = self.episode_timesteps[i]
+                self.completion_timesteps[i] = self.global_timestep
 
                 for key in self.info.keys():
                     if key == 'envs_idx': continue
                     self.info[key][i] = info[key][i]
 
-            # env_status[i] == 1 (truncated) or 0 (already done): do nothing, don't record timesteps
+                # Transfer completed environment data to episode_buffer
+                if self.episode_recording:
+                    self._transfer_env_to_episode_buffer(i)
+
+            elif env_status[i] == 1:  # Truncated by max_steps
+                # Also transfer truncated episode data to episode_buffer
+                if self.episode_recording:
+                    self._transfer_env_to_episode_buffer(i)
+
+            # env_status[i] == 0 (already done): do nothing, already transferred
 
         if active_env_indices:
             if isinstance(obs, dict)==False:
@@ -370,6 +461,64 @@ class PushTImageRunner(BaseImageRunner):
 
         return new_obs, active_env_indices
 
+    def _transfer_env_to_episode_buffer(self, env_idx):
+        """
+        Transfer completed environment data to the global episode_buffer.
+
+        Args:
+            env_idx: Index of the environment that just finished
+        """
+        if len(self.env_obs_buffer[env_idx]) == 0:
+            # No data to transfer (shouldn't happen, but safeguard)
+            return
+
+        # Stack observations for this episode
+        # env_obs_buffer[env_idx] is a list of dicts, each containing 'image' and 'agent_pos'
+        episode_images = torch.stack([obs['image'] for obs in self.env_obs_buffer[env_idx]], dim=0)
+        episode_agent_pos = torch.stack([obs['agent_pos'] for obs in self.env_obs_buffer[env_idx]], dim=0)
+
+        # Stack diffusion actions for this episode (already normalized, from policy)
+        # Shape per step: (diff_steps+1, horizons, Da)
+        episode_actions = torch.stack(self.diffusion_action_buffer[env_idx], dim=0)
+
+        # Stack rewards for this episode
+        episode_rewards = torch.stack(self.env_reward_buffer[env_idx], dim=0)
+
+        # Append to global episode_buffer (keep on GPU)
+        # Note: These lists will accumulate data from all completed episodes
+        if len(self.episode_buffer['obs']['img']) == 0:
+            # First episode - directly assign
+            self.episode_buffer['obs']['img'] = episode_images
+            self.episode_buffer['obs']['agent_pos'] = episode_agent_pos
+            self.episode_buffer['action'] = episode_actions
+            self.episode_buffer['reward'] = episode_rewards
+        else:
+            # Concatenate along the step dimension (global_steps)
+            self.episode_buffer['obs']['img'] = torch.cat([
+                self.episode_buffer['obs']['img'], episode_images
+            ], dim=0)
+            self.episode_buffer['obs']['agent_pos'] = torch.cat([
+                self.episode_buffer['obs']['agent_pos'], episode_agent_pos
+            ], dim=0)
+            self.episode_buffer['action'] = torch.cat([
+                self.episode_buffer['action'], episode_actions
+            ], dim=0)
+            self.episode_buffer['reward'] = torch.cat([
+                self.episode_buffer['reward'], episode_rewards
+            ], dim=0)
+
+        # Record the cumulative global end index for this episode
+        # This is the total number of steps accumulated so far across all episodes
+        current_global_steps = self.episode_buffer['obs']['img'].shape[0]
+        self.episode_buffer['episode_ends'].append(current_global_steps)
+
+        # Increment recording_timesteps to track number of completed episodes
+        self.recording_timesteps += 1
+
+        # Clear this environment's temporary buffers for next episode
+        self.env_obs_buffer[env_idx] = []
+        self.diffusion_action_buffer[env_idx] = []
+        self.env_reward_buffer[env_idx] = []
 
     def _create_log_data(self):
         """Create logging data from collected episode information.
