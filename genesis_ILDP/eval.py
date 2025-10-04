@@ -27,57 +27,6 @@ import json
 import numpy as np
 from genesis_ILDP.workspace.base_workspace import BaseWorkspace
 
-def analyze_evaluation_results(runner_log):
-    """
-    Comprehensive statistical analysis of evaluation results
-    """
-    analysis = {}
-
-    # Helper function to safely process rewards
-    def process_rewards(rewards, prefix):
-        if not rewards or (isinstance(rewards, (list, np.ndarray)) and len(rewards) == 0):
-            return  # Skip if no rewards
-
-        if isinstance(rewards, (list, np.ndarray)) and len(rewards) > 1:
-            rewards = np.array(rewards)
-            analysis[f'{prefix}_reward_mean'] = float(np.mean(rewards))
-            analysis[f'{prefix}_reward_std'] = float(np.std(rewards))
-            analysis[f'{prefix}_reward_min'] = float(np.min(rewards))
-            analysis[f'{prefix}_reward_max'] = float(np.max(rewards))
-            analysis[f'{prefix}_reward_median'] = float(np.median(rewards))
-        elif len(rewards) == 1 or not isinstance(rewards, (list, np.ndarray)):
-            # Single episode case
-            reward_val = float(rewards[0]) if isinstance(rewards, (list, np.ndarray)) else float(rewards)
-            analysis[f'{prefix}_reward_mean'] = reward_val
-            analysis[f'{prefix}_reward_std'] = 0.0
-            analysis[f'{prefix}_reward_min'] = reward_val
-            analysis[f'{prefix}_reward_max'] = reward_val
-            analysis[f'{prefix}_reward_median'] = reward_val
-
-    # Process test and train rewards
-    process_rewards(runner_log.get('test/mean_score'), 'test')
-    process_rewards(runner_log.get('train/mean_score'), 'train')
-
-    # Completion timestep and success rate statistics
-    for prefix in ['test', 'train']:
-        completion_key = f'{prefix}/completion_timesteps'
-        if completion_key in runner_log:
-            completion_times = runner_log[completion_key]
-            if completion_times and len(completion_times) > 0:
-                completion_times = np.array(completion_times)
-                analysis[f'{prefix}_completion_mean'] = float(np.mean(completion_times))
-                analysis[f'{prefix}_completion_std'] = float(np.std(completion_times))
-                analysis[f'{prefix}_completion_min'] = float(np.min(completion_times))
-                analysis[f'{prefix}_completion_max'] = float(np.max(completion_times))
-                analysis[f'{prefix}_completion_median'] = float(np.median(completion_times))
-
-        # Success rate statistics
-        success_key = f'{prefix}/success_rate'
-        if success_key in runner_log:
-            analysis[f'{prefix}_success_rate'] = float(runner_log[success_key])
-
-    return analysis
-
 @click.command()
 @click.option('-c', '--checkpoint', required=True)
 @click.option('-o', '--output_dir', required=True)
@@ -154,44 +103,22 @@ def main(checkpoint, output_dir, device, n_test, n_test_vis, n_train, n_train_vi
     
     runner_log = env_runner.run(policy)
 
-    # Perform comprehensive statistical analysis
-    enhanced_stats = analyze_evaluation_results(runner_log)
-
-    # Combine original log with enhanced statistics
-    combined_log = dict(runner_log)
-    combined_log.update(enhanced_stats)
-
-    # dump log to json
+    # Convert runner_log to JSON-serializable format
     json_log = dict()
-    for key, value in combined_log.items():
+    for key, value in runner_log.items():
         if isinstance(value, wandb.sdk.data_types.video.Video):
             json_log[key] = value._path
-        elif hasattr(value, 'item'):  # Handle numpy scalars
-            json_log[key] = float(value.item()) if hasattr(value, 'item') else float(value)
+        elif hasattr(value, 'item'):
+            json_log[key] = float(value.item())
         elif isinstance(value, (np.float32, np.float64, np.int32, np.int64)):
             json_log[key] = float(value)
         else:
             json_log[key] = value
 
-    # Print comprehensive statistics summary
-    print("\n=== Evaluation Results Summary ===")
-    if 'test_reward_mean' in json_log:
-        print(f"Test Reward: {json_log['test_reward_mean']:.3f} ± {json_log.get('test_reward_std', 0):.3f}")
-        if 'test_completion_mean' in json_log:
-            print(f"Test Completion Time: {json_log['test_completion_mean']:.1f} ± {json_log.get('test_completion_std', 0):.1f} steps")
-        if 'test_success_rate' in json_log:
-            print(f"Test Success Rate: {json_log['test_success_rate']:.1%}")
-
-    if 'train_reward_mean' in json_log:
-        print(f"Train Reward: {json_log['train_reward_mean']:.3f} ± {json_log.get('train_reward_std', 0):.3f}")
-        if 'train_completion_mean' in json_log:
-            print(f"Train Completion Time: {json_log['train_completion_mean']:.1f} ± {json_log.get('train_completion_std', 0):.1f} steps")
-        if 'train_success_rate' in json_log:
-            print(f"Train Success Rate: {json_log['train_success_rate']:.1%}")
-
+    # Save results to JSON
     out_path = os.path.join(output_dir, 'eval_log.json')
     json.dump(json_log, open(out_path, 'w'), indent=2, sort_keys=True)
-    print(f"\nDetailed results saved to: {out_path}")
+    print(f"Results saved to: {out_path}")
 
 if __name__ == '__main__':
     main()

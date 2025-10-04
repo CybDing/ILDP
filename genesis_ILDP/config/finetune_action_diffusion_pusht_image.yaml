@@ -1,0 +1,189 @@
+# === FINE-TUNING CONFIGURATION FOR ACTION DIFFUSION IMAGE POLICY ===
+# This config is used by FT_DIFF_datasets.py to fine-tune a pretrained model
+#
+# Usage:
+#   python script/FT_DIFF_datasets.py \
+#     --checkpoint ./outputs/pretrained/checkpoints/latest.ckpt \
+#     --output_dir ./outputs/finetuned \
+#     --reset_optimizer \
+#     --reset_epoch
+
+_target_: genesis_ILDP.workspace.train_action_diffusion_image_workspace.TrainActionDiffusionImageWorkspace
+
+# === EXPERIMENT SETTINGS ===
+exp_name: "action_diffusion_pusht_finetune"
+task_name: pusht_image_ddpm_ft
+name: finetune_action_diffusion_image
+
+# === STANDARD DIFFUSION PARAMETERS ===
+# These should match the pretrained model architecture
+horizon: 16
+n_action_steps: 8
+n_obs_steps: 2
+n_latency_steps: 0
+dataset_obs_steps: 2
+obs_as_global_cond: true
+past_action_visible: false
+keypoint_visible_rate: 1.0
+
+# === SHAPE METADATA ===
+# IMPORTANT: Must match pretrained model
+shape_meta:
+  action:
+    shape: [2]
+  obs:
+    image:
+      shape: [3, 96, 96]
+      type: rgb
+    agent_pos:
+      shape: [2]
+      type: low_dim
+
+# === POLICY CONFIGURATION ===
+# IMPORTANT: Must match pretrained model architecture
+policy:
+  _target_: genesis_ILDP.policy.action_diffusion_image_policy.ActionDiffusionImagePolicy
+
+  shape_meta: ${shape_meta}
+  horizon: ${horizon}
+  n_action_steps: ${n_action_steps}
+  n_obs_steps: ${n_obs_steps}
+  obs_steps: ${n_obs_steps}
+  enable_crop: true
+  crop_shape: [3, 86, 86]
+
+  diff_steps: 100
+  scheduler_mode: 'Cosine'
+  encode_agent_pos: false
+  vision_backbone: 'resnet18'
+
+# === TASK CONFIGURATION ===
+task:
+  name: pusht_image
+  shape_meta: ${shape_meta}
+
+  # NEW DATASET FOR FINE-TUNING
+  # IMPORTANT: Change this to your fine-tuning dataset path
+  dataset:
+    _target_: genesis_ILDP.dataset.pusht_image_dataset.PushTImageDataset
+    zarr_path: genesis_ILDP/data/train_data/finetune_dataset.zarr  # UPDATE THIS PATH
+    horizon: ${horizon}
+    pad_before: ${eval:'${n_obs_steps}-1'}
+    pad_after: ${eval:'${n_action_steps}-1'}
+    seed: 42
+    val_ratio: 0.05
+    max_train_episodes: null  # Use all episodes or set a limit
+
+  # Environment runner for evaluation
+  env_runner:
+    _target_: genesis_ILDP.env_runner.pusht_image_runner.PushTImageRunner
+    output_dir: ${multi_run.run_dir}
+    fps: 30
+    max_steps: 600
+    n_action_steps: ${n_action_steps}
+    n_obs_steps: ${n_obs_steps}
+    n_test: 10
+    n_test_vis: 10
+    n_train: 5
+    n_train_vis: 5
+    test_start_seed: 50000
+    train_start_seed: 0
+    n_envs: null
+    enable_past_action: False
+    enable_render: True
+    done_ratio: 0.7
+
+# === FINE-TUNING TRAINING CONFIGURATION ===
+training:
+  seed: 42
+  device: cuda:0
+
+  # FINE-TUNING EPOCHS: Typically much fewer than pretraining
+  num_epochs: 100  # Reduced from 500 for fine-tuning
+  batch_size: 128
+
+  # FINE-TUNING LEARNING RATE: Typically lower than pretraining
+  # Note: Actual LR is set in optimizer section below
+  lr_scheduler: cosine
+  lr_warmup_steps: 100  # Reduced warmup for fine-tuning
+  gradient_accumulate_every: 1
+
+  # Checkpointing and evaluation
+  checkpoint_every: 20  # More frequent checkpoints for fine-tuning
+  val_every: 5
+  rollout_every: 20
+  sample_every: 5
+
+  max_train_steps: null
+  max_val_steps: null
+
+  debug: false
+  tqdm_interval_sec: 1.0
+  use_ema: true
+  resume: false  # Don't auto-resume, FT script handles loading
+
+# === OPTIMIZER CONFIGURATION FOR FINE-TUNING ===
+optimizer:
+  _target_: torch.optim.AdamW
+
+  # LOWER LEARNING RATE FOR FINE-TUNING
+  # Typical fine-tuning LR is 10x-100x smaller than pretraining
+  lr: 0.00001  # 10x smaller than pretraining (was 0.0001)
+
+  # Keep other optimizer params same as pretraining
+  betas: [0.95, 0.999]
+  eps: 1.0e-08
+  weight_decay: 1.0e-06
+
+# === DATA LOADING ===
+dataloader:
+  batch_size: ${training.batch_size}
+  num_workers: 8
+  persistent_workers: false
+  pin_memory: true
+  shuffle: true
+
+val_dataloader:
+  batch_size: ${training.batch_size}
+  num_workers: 8
+  persistent_workers: false
+  pin_memory: true
+  shuffle: false
+
+# === EMA CONFIGURATION ===
+ema:
+  _target_: genesis_ILDP.model.diffusion.ema_model.EMAModel
+  inv_gamma: 1.0
+  max_value: 0.9999
+  min_value: 0.0
+  power: 0.75
+  update_after_step: 0
+
+# === CHECKPOINT CONFIGURATION ===
+checkpoint:
+  save_last_ckpt: true
+  save_last_snapshot: false
+  topk:
+    format_str: epoch={epoch:04d}-test_mean_score={test_mean_score:.3f}.ckpt
+    k: 5
+    mode: max
+    monitor_key: test_mean_score
+
+# === LOGGING CONFIGURATION ===
+logging:
+  mode: disabled  # or 'online'/'offline' for wandb
+  project: genesis_ILDP_finetune
+  group: action_diffusion_pusht_ft
+  name: ${exp_name}_${now:%Y.%m.%d-%H.%M.%S}
+  tags:
+    - action_diffusion_image
+    - pusht_image
+    - fine_tuning
+    - genesis
+  id: null
+  resume: false
+
+# === OUTPUT CONFIGURATION ===
+multi_run:
+  run_dir: outputs/${now:%Y.%m.%d}/${now:%H.%M.%S}_${exp_name}
+  wandb_name_base: ${now:%Y.%m.%d}-${now:%H.%M.%S}_${exp_name}

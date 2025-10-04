@@ -27,12 +27,14 @@ class PushTEnv(gym.Env):
                  render_size=(96, 96),
                  xlim=.2,
                  ylim=.2,
-                 seed=None, 
+                 seed=None,
                  model_path=env_path,
                  fps = 30,
                  show_fps = True,
                  device = None,
-                 done_ratio = 0.85
+                 done_ratio = 0.85,
+                 spawn_center=(0.0, 0.3),  # Center of spawn region (x, y)
+                 spawn_range_scale=1.0     # Scale factor for spawn range (1.0 = use xlim/ylim)
                  ):
 
         self.render_size = render_size
@@ -45,11 +47,13 @@ class PushTEnv(gym.Env):
         self.np_random = None
         self.block_lim = {'xlim': xlim, 'ylim': ylim}
         self.path = model_path
-        self.env_seed = None 
+        self.env_seed = None
         self.fps = fps
         self.show_fps = show_fps
         self.device = None
         self.done_ratio = done_ratio
+        self.spawn_center = spawn_center
+        self.spawn_range_scale = spawn_range_scale
 
         self.ini_delta_dis: Union[float, np.ndarray] = 0.0
         self.ini_delta_ang: Union[float, np.ndarray] = 0.0 
@@ -156,8 +160,7 @@ class PushTEnv(gym.Env):
                 ]
                 )
         )
-        # box_baselink_joint, box_baselink
-
+        
         self.cam = self.scene.add_camera(
             res=self.render_size,
             pos=(0, 0.3, 0.9),
@@ -231,14 +234,17 @@ class PushTEnv(gym.Env):
             else:
                 raise ValueError("ENV-LEVEL seeds have not been defined!")
             
-            x_center, y_center = -0.3, 0.3
-            x_span = float(self.block_lim['xlim'])   # e.g., 0.1 -> x in [-0.45, -0.25]
-            y_span = float(self.block_lim['ylim'])   # e.g., 0.1 -> y in [ 0.25,  0.45]
-            min_xy_sep = 0.12                        # meters, tune
-            min_ang_sep = np.deg2rad(20.0)           # radians, set 0 to disable
+            # Use configurable spawn center and range
+            x_center, y_center = self.spawn_center
+            x_span = float(self.block_lim['xlim']) * self.spawn_range_scale
+            y_span = float(self.block_lim['ylim']) * self.spawn_range_scale
+            min_xy_sep = 0.12                        # meters, this effect the model performance greatly
+            # change to 0.16 make eval results somewhat better 
+            min_ang_sep = np.deg2rad(20.0)           # could set to zero 
             max_tries = 64
 
             def sample_xy():
+                # Sample uniformly in region: [center - span, center + span]
                 x = x_center - x_span + rng.random() * (2.0 * x_span)
                 y = y_center - y_span + rng.random() * (2.0 * y_span)
                 return x, y
@@ -286,8 +292,17 @@ class PushTEnv(gym.Env):
         self.ini_delta_dis = torch.linalg.norm(block_pos[:, :2] - target_pos[:, :2], axis=1, keepdims=False)
         # Wrap angle difference to [-pi, pi]
         ang_diff0 = torch.atan2(torch.sin(block_angle - target_angle), torch.cos(block_angle - target_angle))
-        self.ini_delta_ang = torch.abs(ang_diff0)
-        self.reward0 = torch.tensor(1 / (1 + 0.1) * 1 / np.sqrt(1 + 0.1), device=gs.device, dtype=torch.float32)
+        self.ini_delta_ang = torch.abs(ang_diff0).squeeze()
+
+        # Calculate baseline reward (reward at initial state)
+        # Position component at initial distance
+        max_distance = 0.5
+        pos_reward_init = 5.0 * torch.exp(-3.0 * self.ini_delta_dis / max_distance)
+        # Angle component at initial angle difference
+        ang_reward_init = 2.0 * torch.cos(self.ini_delta_ang)
+        ang_reward_init = torch.clamp(ang_reward_init, 0.0, 2.0)
+        # Baseline = position + angle (no success bonus, no progress bonus at t=0)
+        self.reward0 = pos_reward_init + ang_reward_init
 
         block_state_torch = torch.concatenate([
             block_pos,
@@ -538,7 +553,7 @@ class PushTEnv(gym.Env):
 
     def _cal_rewards(self) -> Union[torch.FloatType, torch.Tensor]:
         """
-        Interpretable reward function for PushT task.
+        Baseline-centered interpretable reward function for PushT task.
 
         Reward components:
         1. Position proximity: [0, 5] - Higher when object closer to target
@@ -546,10 +561,11 @@ class PushTEnv(gym.Env):
         3. Success bonus: +10 - Large bonus for task completion
         4. Progress bonus: [0, 1] - Rewards improvement from initial state
 
-        Total reward range: [0, 18] where:
-        - 0-8: Poor performance
-        - 8-12: Good progress
-        - 12-18: Excellent/Success
+        Returns: reward - baseline (centered around 0)
+        - Negative values: Worse than initial position
+        - ~0: Similar to initial position
+        - Positive values: Better than initial position
+        - Large positive (>10): Task completion
         """
         if self.poses is None:
             default_envs = torch.arange(self.n_envs, device=gs.device, dtype=torch.int32)
@@ -559,39 +575,40 @@ class PushTEnv(gym.Env):
         tar_pos = self.poses['target_Tpose']
 
         # Calculate current distance and angle errors
-        pos_error = torch.linalg.norm(cur_pos[:, :2] - tar_pos[:, :2], dim=1)  # Fix dimension
+        pos_error = torch.linalg.norm(cur_pos[:, :2] - tar_pos[:, :2], dim=1)
         ang_diff = torch.atan2(torch.sin(cur_pos[:, 5] - tar_pos[:, 5]), torch.cos(cur_pos[:, 5] - tar_pos[:, 5]))
         ang_error = torch.abs(ang_diff)
 
         # === COMPONENT 1: Position Proximity Reward (0-5 points) ===
-        # Exponential decay: close distance = high reward
         max_distance = 0.5  # meters (reasonable workspace)
         pos_reward = 5.0 * torch.exp(-3.0 * pos_error / max_distance)
 
         # === COMPONENT 2: Angle Alignment Reward (0-2 points) ===
-        # Cosine-based: aligned angles = high reward
-        ang_reward = 2.0 * torch.cos(ang_error)  # cos(0)=1, cos(π)=-1, clamp to [0,2]
+        ang_reward = 2.0 * torch.cos(ang_error)
         ang_reward = torch.clamp(ang_reward, 0.0, 2.0)
 
         # === COMPONENT 3: Success Bonus (0 or 10 points) ===
-        # Large bonus for completing the task
         intersection_ratios = torch.tensor(self._cal_intersection(), device=gs.device)
         success_bonus = 10.0 * (intersection_ratios > self.done_ratio).float()
 
         # === COMPONENT 4: Progress Bonus (0-1 points) ===
-        # Reward improvement from initial state
         pos_progress = torch.clamp((self.ini_delta_dis - pos_error) / self.ini_delta_dis, 0.0, 1.0)
 
-        # === TOTAL REWARD ===
-        total_reward = pos_reward + ang_reward + success_bonus + pos_progress
+        # === RAW REWARD ===
+        raw_reward = pos_reward + ang_reward + success_bonus + pos_progress
+
+        # === BASELINE-CENTERED REWARD ===
+        # Subtract the baseline reward calculated at reset
+        centered_reward = raw_reward - self.reward0
 
         # Optional: Add debugging info (can be disabled for training)
         if hasattr(self, 'debug_rewards') and self.debug_rewards:
             print(f"Reward breakdown - Pos: {pos_reward[0]:.2f}, Ang: {ang_reward[0]:.2f}, "
                   f"Success: {success_bonus[0]:.2f}, Progress: {pos_progress[0]:.2f}, "
-                  f"Total: {total_reward[0]:.2f}")
+                  f"Raw: {raw_reward[0]:.2f}, Baseline: {self.reward0[0]:.2f}, "
+                  f"Centered: {centered_reward[0]:.2f}")
 
-        return total_reward
+        return centered_reward
 
 
     def _ikine(self, link: gs.engine.entities.rigid_entity.RigidLink, 

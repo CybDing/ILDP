@@ -96,11 +96,12 @@ class MultiStepWrapper(gym.Wrapper):
 
         for env_idx in self.active_envs:
             self.current_step_rewards[env_idx].clear()
-        
+
         done_list = []
-        
+        natural_done_list = []  # Track which envs reached natural done (not truncated)
+
         active_envs_tensor = to_torch(np.array(self.active_envs))
-        
+
         # print("[multistep_wrapper_parallel.py]: action shape", action.shape)
         if self.debug:
             print("<Debug> [multistep_wrapper_parallel.py]: action in env_idx = 0", action[0, :])
@@ -116,7 +117,7 @@ class MultiStepWrapper(gym.Wrapper):
             # if step_idx == 0:
             #     reward_is_array = isinstance(reward, (list, np.ndarray, torch.Tensor))
             #     done_is_array = isinstance(done, (list, np.ndarray, torch.Tensor))
-            
+
             # Process all environments in batch
             for env_idx in self.active_envs:
                 # Extract data using unified function - use env_idx instead of i for correct indexing
@@ -124,30 +125,34 @@ class MultiStepWrapper(gym.Wrapper):
                 env_reward = reward[env_idx]
                 env_done = done[env_idx]
                 env_info = self._extract_env_data(info, env_idx)
-                
+
                 # Update environment state
                 self.obs[env_idx].append(env_obs)
                 self.current_step_rewards[env_idx].append(env_reward)
                 self.info[env_idx] = env_info
-                
+
                 # Check termination conditions
                 self.step_counts[env_idx] += 1
-                if (self.max_episode_steps is not None and 
+                natural_done = env_done  # Store natural done before overwriting
+
+                if (self.max_episode_steps is not None and
                     self.step_counts[env_idx] >= self.max_episode_steps):
                     env_done = True
-                    
+
                 if env_done and env_idx not in done_list:
                     done_list.append(env_idx)
+                    if natural_done:  # Only add to natural_done if env reached done naturally
+                        natural_done_list.append(env_idx)
     
         observation = self._get_obs(self.n_obs_steps)
         reward = self._aggregate_current_rewards()
         info = self._aggregate_current_info()
-        
-        done = self._create_env_status(done_list)
-        
+
+        done = self._create_env_status(done_list, natural_done_list)
+
         # Remove terminated environments from active list
         self.active_envs = [idx for idx in self.active_envs if idx not in done_list]
-        
+
         return observation, reward, done, info
     
     def _aggregate_current_rewards(self):
@@ -177,17 +182,27 @@ class MultiStepWrapper(gym.Wrapper):
         return torch.stack(aggregated_rewards, dim=0)
     
     
-    def _create_env_status(self, done_list):
-        env_status = [0] * self.env.n_envs  # indicate that 0 is already finished env in previous round
+    def _create_env_status(self, done_list, natural_done_list):
+        """Create environment status list.
+        Status codes:
+        0: Already finished in previous iterations
+        1: Just finished (truncated by max_steps)
+        2: Still active
+        3: Just finished (natural success - reached done condition)
+        """
+        env_status = [0] * self.env.n_envs  # Already finished env in previous round
 
         # Set active environments to status 2
         for idx in self.active_envs:
             env_status[idx] = 2
-        
-        # Set terminated environments to status 1
+
+        # Set terminated environments: 3 for natural success, 1 for truncation
         for idx in done_list:
-            env_status[idx] = 1
-            
+            if idx in natural_done_list:
+                env_status[idx] = 3  # Natural success
+            else:
+                env_status[idx] = 1  # Truncated
+
         return env_status
     
     def _aggregate_current_info(self):

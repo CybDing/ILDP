@@ -21,7 +21,7 @@ from genesis_ILDP.env_runner.base_image_runner import BaseImageRunner
 from genesis_ILDP.utils.cuda import *
 from genesis_ILDP.config.env_config import *
 from collections import defaultdict
-from genesis_ILDP.policy.test_policy import TestPolicy
+from genesis_ILDP.policy.dummy_policy import DummyPolicy
 
 base_video_path = target_folder1
 
@@ -110,12 +110,6 @@ class PushTImageRunner(BaseImageRunner):
         self._prepare_env()
         obs = self.env.reset() # return (parallel_envs_counts, obs_dict)
 
-        # Debug: print initial observation structure
-        print(f"Reset obs keys: {obs.keys()}")
-        for key, value in obs.items():
-            if hasattr(value, 'shape'):
-                print(f"Reset obs['{key}'].shape: {value.shape}")
-
         self.past_action = None
         # policy.reset()  # Reset states for stateful policy
         done = False
@@ -136,25 +130,10 @@ class PushTImageRunner(BaseImageRunner):
             while not is_done:
                 obs_dict = dict(obs)
 
-                # Debug: print obs_dict structure before policy call
-                print(f"Before policy - obs_dict keys: {obs_dict.keys()}")
-
                 if 'envs_idx' in obs_dict:
-                    # print(f"Removing envs_idx from obs_dict")
                     del obs_dict['envs_idx']
 
-                # Add past action if enabled, and note that the past action is counted according to the n_obs_steps number
-                # if n_obs_steps is larger than 2, say 3, than the past action should only terminate at one step before the full execution
-                # since it start planning earlier ? 
-                # if self.past_action and (past_action is not None):
-                #     obs_dict['past_action'] = past_action[
-                #                             :, -(self.n_obs_steps - 1):
-                #                             ].astype(np.float32)
-
                 with torch.no_grad():
-                    # Debug print to understand rollout input shapes
-                    print(f"Rollout obs_dict shapes - image: {obs_dict['image'].shape}, agent_pos: {obs_dict['agent_pos'].shape}")
-
                     action_dict = policy.predict_action(obs_dict)
 
                 if isinstance(action_dict, dict):
@@ -167,11 +146,9 @@ class PushTImageRunner(BaseImageRunner):
                     raise ValueError("Inconsistent envs number for active envs when predicting actions")
                 else:
                     Active_action = {
-                        'envs_idx': active_envs_idx, 
+                        'envs_idx': active_envs_idx,
                         'action': action
                     }
-                # Debug print to understand rollout output shapes
-                print(f"Rollout action shape: {action.shape}, expected batch size: {len(Active_action['envs_idx'])}")
                       
                 obs, reward, done, info = self.env.step(Active_action)
 
@@ -219,6 +196,27 @@ class PushTImageRunner(BaseImageRunner):
 
         # Create and return logging data
         log_data = self._create_log_data()
+
+        # Print summary statistics (aligned with eval.py format)
+        print("\n=== Evaluation Results Summary ===")
+        for prefix in ['test/', 'train/']:
+            prefix_name = prefix.rstrip('/')
+            if f'{prefix}reward_mean' in log_data:
+                # Calculate episode counts for debugging
+                if prefix == 'train/':
+                    total = self.n_train
+                    successful = sum(1 for i in range(self.n_train) if self.completion_timesteps[i] is not None)
+                else:
+                    total = self.n_test
+                    successful = sum(1 for i in range(self.n_train, self.n_envs) if self.completion_timesteps[i] is not None)
+
+                print(f"{prefix_name.capitalize()}: {successful}/{total} succeeded")
+                print(f"  Reward: {log_data[f'{prefix}reward_mean']:.3f} ± {log_data.get(f'{prefix}reward_std', 0):.3f}")
+                if f'{prefix}completion_mean' in log_data:
+                    print(f"  Completion: {log_data[f'{prefix}completion_mean']:.1f} ± {log_data.get(f'{prefix}completion_std', 0):.1f} steps")
+                if f'{prefix}success_rate' in log_data:
+                    print(f"  Success Rate: {log_data[f'{prefix}success_rate']:.1%}")
+
         return log_data
     
 
@@ -229,7 +227,6 @@ class PushTImageRunner(BaseImageRunner):
         local_idx = 0
         for i in range(self.n_envs):
             if i in action_dict['envs_idx']:
-                print(self.past_action)
                 self.past_action[i].append(action_dict['action'][local_idx])
                 local_idx = local_idx + 1
             else:
@@ -326,63 +323,63 @@ class PushTImageRunner(BaseImageRunner):
                 print(f"Error cleaning {temp_file}: {e}")
 
     def _process_info(self, obs, reward, info, env_status, final_saving=False):
-        # save info, reward(max), process obs(number: 2) 
-        # prepare obs
+        """Process environment info and rewards.
+
+        env_status codes from multistep_wrapper_parallel.py:
+        0: Already finished in previous iterations
+        1: Just finished (truncated by max_steps)
+        2: Still active
+        3: Just finished (natural success - reached done condition)
+        """
         new_obs = defaultdict(list)
         if self.info is None:
             self.info = info
-        
+
         active_env_indices = []
         for i in range(self.n_envs):
-            # if env_status[i] == 0 and final_saving==True: # save for truncating envs
-            #     # copy latest info
-            #     for key in self.info.keys():
-            #         if key == 'envs_idx': continue
-            #         if reward[i] is None: raise ValueError("Reward saving error!")
-            #         self.info[key][i] = info[key][i]
-            
-            if reward[i] is None: raise ValueError("Reward saving error!")
+            if reward[i] is None:
+                raise ValueError("Reward saving error!")
             self.episode_reward[i].append(reward[i].cpu().numpy())
 
-            if env_status[i] == 2: # does not save for final info, but save for the current idx number for aggregate the observation for predicting new action as well as stepping in 
-                # multistep_wrapper_parallel.py 
+            if env_status[i] == 2:  # Still active
                 active_env_indices.append(i)
-            
-            if env_status[i] == 1: # save for terminated envs
-                # Record global timestep when this environment completed
-                self.completion_timesteps[i] = self.global_timestep
-                print(f"Environment {i} completed at global timestep {self.global_timestep}")
+
+            elif env_status[i] == 3:  # Natural success
+                # Record per-env timestep when this environment succeeded
+                self.completion_timesteps[i] = self.episode_timesteps[i]
 
                 for key in self.info.keys():
                     if key == 'envs_idx': continue
-                    if reward[i] is None: raise ValueError("Reward saving error!")
                     self.info[key][i] = info[key][i]
-        
-        if active_env_indices:
-            if isinstance(obs, dict)==False: 
-                raise TypeError('Obs Type Error!')
-            
-            for key in obs.keys():
 
+            # env_status[i] == 1 (truncated) or 0 (already done): do nothing, don't record timesteps
+
+        if active_env_indices:
+            if isinstance(obs, dict)==False:
+                raise TypeError('Obs Type Error!')
+
+            for key in obs.keys():
                 active_obs = []
                 for i in active_env_indices:
-                    # including adding the envs idx for future executing action 
-                    if obs[key][i] is None: 
+                    if obs[key][i] is None:
                         raise ValueError("Obs Saving Error!")
                     active_obs.append(obs[key][i])
-                
+
                 if active_obs:
                     new_obs[key] = torch.stack(active_obs, dim=0)
-        
+
         return new_obs, active_env_indices
 
 
     def _create_log_data(self):
-        """Create logging data from collected episode information."""
+        """Create logging data from collected episode information.
+        Aligned with eval.py format for consistency.
+        """
         max_rewards = collections.defaultdict(list)
         completion_times = collections.defaultdict(list)
         log_data = dict()
 
+        # Collect per-environment data
         for i in range(self.n_envs):
             seed = self.env_seeds[i]
             if i < self.n_train:
@@ -398,66 +395,89 @@ class PushTImageRunner(BaseImageRunner):
                 max_reward = np.max(np.array(self.episode_reward[i]))
             else:
                 max_reward = 0.0
-                print(f"Warning: No rewards collected for env {i}")
 
             max_rewards[prefix].append(max_reward)
-            log_data[prefix + f'sim_max_reward_{seed}'] = max_reward
 
-            # Add completion timestep data
+            # Track completion timesteps only for successful episodes
             if self.completion_timesteps[i] is not None:
                 completion_times[prefix].append(self.completion_timesteps[i])
-                log_data[prefix + f'completion_timesteps_{seed}'] = self.completion_timesteps[i]
-                log_data[prefix + f'success_{seed}'] = True
-            else:
-                log_data[prefix + f'completion_timesteps_{seed}'] = None
-                log_data[prefix + f'success_{seed}'] = False
-    
+
             # Add video logs if available
             if should_upload_video and self.file_path is not None and i < len(self.file_path):
                 video_path = self.file_path[i]
-                if Path(video_path).exists(): 
+                if Path(video_path).exists():
                     try:
                         sim_video = wandb.Video(video_path)
                         log_data[prefix + f'sim_video_{seed}'] = sim_video
-                        print(f"Added video log: {prefix}sim_video_{seed} from {video_path}")
                     except Exception as e:
                         print(f"Warning: Failed to create video log for {video_path}: {e}")
-                else:
-                    print(f"Warning: Video file not found: {video_path}")
-    
-        # Calculate mean scores
-        for prefix, rewards in max_rewards.items():
+
+        # Calculate aggregate statistics per prefix (train/test)
+        for prefix in ['train/', 'test/']:
+            if prefix not in max_rewards:
+                continue
+
+            rewards = np.array(max_rewards[prefix])
+            times = np.array(completion_times[prefix]) if prefix in completion_times else np.array([])
+
+            # Reward statistics (aligned with eval.py)
             if len(rewards) > 0:
-                mean_score = np.mean(rewards)
-                log_data[prefix + 'mean_score'] = mean_score
-                print(f"Mean score for {prefix}: {mean_score:.3f}")
-            else:
-                log_data[prefix + 'mean_score'] = 0.0
-                print(f"Warning: No rewards for {prefix}")
+                reward_mean = float(np.mean(rewards))
+                reward_std = float(np.std(rewards))
+                reward_min = float(np.min(rewards))
+                reward_max = float(np.max(rewards))
+                reward_median = float(np.median(rewards))
 
-        # Calculate completion time and success statistics
-        for prefix, times in completion_times.items():
-            total_episodes = len(max_rewards[prefix])
+                # Format with / for runner compatibility
+                log_data[prefix + 'reward_mean'] = reward_mean
+                log_data[prefix + 'reward_std'] = reward_std
+                log_data[prefix + 'reward_min'] = reward_min
+                log_data[prefix + 'reward_max'] = reward_max
+                log_data[prefix + 'reward_median'] = reward_median
+                log_data[prefix + 'mean_score'] = reward_mean  # Backward compatibility
+
+                # Also add format without / for eval.py compatibility
+                prefix_name = prefix.rstrip('/')
+                log_data[f'{prefix_name}_reward_mean'] = reward_mean
+                log_data[f'{prefix_name}_reward_std'] = reward_std
+                log_data[f'{prefix_name}_reward_min'] = reward_min
+                log_data[f'{prefix_name}_reward_max'] = reward_max
+                log_data[f'{prefix_name}_reward_median'] = reward_median
+
+            # Completion time statistics (aligned with eval.py)
+            if len(times) > 0:
+                completion_mean = float(np.mean(times))
+                completion_std = float(np.std(times))
+                completion_min = float(np.min(times))
+                completion_max = float(np.max(times))
+                completion_median = float(np.median(times))
+
+                # Format with / for runner compatibility
+                log_data[prefix + 'completion_mean'] = completion_mean
+                log_data[prefix + 'completion_std'] = completion_std
+                log_data[prefix + 'completion_min'] = completion_min
+                log_data[prefix + 'completion_max'] = completion_max
+                log_data[prefix + 'completion_median'] = completion_median
+
+                # Also add format without / for eval.py compatibility
+                prefix_name = prefix.rstrip('/')
+                log_data[f'{prefix_name}_completion_mean'] = completion_mean
+                log_data[f'{prefix_name}_completion_std'] = completion_std
+                log_data[f'{prefix_name}_completion_min'] = completion_min
+                log_data[f'{prefix_name}_completion_max'] = completion_max
+                log_data[f'{prefix_name}_completion_median'] = completion_median
+
+            # Success rate (aligned with eval.py)
+            total_episodes = len(rewards)
             successful_episodes = len(times)
-
-            if successful_episodes > 0:
-                # Completion time statistics
-                log_data[prefix + 'completion_time_mean'] = np.mean(times)
-                log_data[prefix + 'completion_time_std'] = np.std(times)
-                log_data[prefix + 'completion_time_min'] = np.min(times)
-                log_data[prefix + 'completion_time_max'] = np.max(times)
-                log_data[prefix + 'completion_time_median'] = np.median(times)
-
-                print(f"Completion times for {prefix}: mean={np.mean(times):.1f}, std={np.std(times):.1f}")
-            else:
-                log_data[prefix + 'completion_time_mean'] = None
-                log_data[prefix + 'completion_time_std'] = None
-                print(f"Warning: No successful completions for {prefix}")
-
-            # Success rate
             success_rate = successful_episodes / total_episodes if total_episodes > 0 else 0.0
-            log_data[prefix + 'success_rate'] = success_rate
-            print(f"Success rate for {prefix}: {success_rate:.2%} ({successful_episodes}/{total_episodes})")
+
+            # Format with / for runner compatibility
+            log_data[prefix + 'success_rate'] = float(success_rate)
+
+            # Also add format without / for eval.py compatibility
+            prefix_name = prefix.rstrip('/')
+            log_data[f'{prefix_name}_success_rate'] = float(success_rate)
 
         return log_data
 
@@ -465,6 +485,6 @@ if __name__ == "__main__":
         # use collect_data policy to check availability
         output_dir = ''
         Runner = PushTImageRunner(output_dir)
-        policy = TestPolicy(Runner.n_action_steps)
+        policy = DummyPolicy(Runner.n_action_steps)
         Runner.run(policy)
         

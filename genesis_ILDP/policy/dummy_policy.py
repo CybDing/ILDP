@@ -4,7 +4,7 @@ import torch.nn as nn
 # from genesis_ILDP.policy.base_image_policy import BaseImagePolicy
 
 
-class TestPolicy():
+class DummyPolicy():
     def __init__(self, n_action_steps):
         super().__init__()
         self.n_action_steps = n_action_steps

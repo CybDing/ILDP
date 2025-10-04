@@ -66,8 +66,7 @@ class global_img_encoding(nn.Module):
         return features
     
     def get_feature_dim(self, ):
-        return self.encoded_dim
-    
+        return self.encoded_dim 
 
 def time_encoding(t, t_emb_dim=128): # TODO make params changeable in config.yaml file
     half_embedding_dim = t_emb_dim // 2

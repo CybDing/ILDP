@@ -49,11 +49,34 @@ class TrainActionDiffusionImageWorkspace(BaseWorkspace):
         self.generator = torch.Generator()  # Use CPU generator for multiprocessing compatibility
         self.generator.manual_seed(seed)
 
+        # Set all random seeds for reproducibility
         np.random.seed(seed)
         random.seed(seed)
-        torch.manual_seed(seed)  # Set global seed for CUDA operations
+        torch.manual_seed(seed)
         if device.type == 'cuda':
-            torch.cuda.manual_seed_all(seed)  # Set CUDA seed for all devices
+            torch.cuda.manual_seed_all(seed)
+
+            # Optional: Enable deterministic operations for full reproducibility
+            # Trade-off: ~10-20% slower training but guarantees exact reproducibility
+            # Can be disabled if you only need approximate reproducibility
+            use_deterministic = cfg.training.get('use_deterministic', False)
+            if use_deterministic:
+                torch.backends.cudnn.deterministic = True
+                torch.backends.cudnn.benchmark = False
+                print("Using deterministic CuDNN operations (slower but fully reproducible)")
+            else:
+                torch.backends.cudnn.deterministic = False
+                torch.backends.cudnn.benchmark = True
+                print("Using non-deterministic CuDNN operations (faster but approximate reproducibility)")
+
+        # Worker init function for DataLoader multiprocessing
+        def worker_init_fn(worker_id):
+            """Ensure each DataLoader worker has unique but reproducible seed"""
+            worker_seed = seed + worker_id
+            np.random.seed(worker_seed)
+            random.seed(worker_seed)
+
+        self.worker_init_fn = worker_init_fn
 
         self.model: ActionDiffusionImagePolicy = hydra.utils.instantiate(cfg.policy)
         
@@ -72,6 +95,26 @@ class TrainActionDiffusionImageWorkspace(BaseWorkspace):
         print(f"- Model type: {type(self.model).__name__}")
         print(f"- Device: {cfg.training.device}")
         print(f"- Use EMA: {cfg.training.use_ema}")
+        print(f"- Seed: {seed}")
+
+        # Print reproducibility information
+        print("\n=== Reproducibility Configuration ===")
+        if device.type == 'cuda':
+            deterministic_mode = cfg.training.get('use_deterministic', False)
+            if deterministic_mode:
+                print("⚠️  CuDNN Deterministic: ENABLED (slower but fully reproducible)")
+            else:
+                print("⚠️  CuDNN Deterministic: DISABLED (faster but approximate reproducibility)")
+        print("\nNote: Even with same seed, training may produce slightly different results due to:")
+        print("  1. Random noise sampling in diffusion training (different per batch)")
+        print("  2. Random image cropping augmentation")
+        print("  3. GPU parallelism and floating-point rounding")
+        print("  4. DataLoader worker thread scheduling")
+        print("For best reproducibility:")
+        print("  - Use use_deterministic: true in config")
+        print("  - Run on same hardware/GPU")
+        print("  - Use same PyTorch/CUDA version")
+        print("=====================================\n")
 
     def run(self):
         cfg = copy.deepcopy(self.cfg)
@@ -96,13 +139,14 @@ class TrainActionDiffusionImageWorkspace(BaseWorkspace):
         
         # Fix generator usage for DataLoader
         if dataloader_kwargs.get('num_workers', 0) > 0:
-            # For multiprocessing, use CPU generator
-            train_dataloader = DataLoader(dataset, 
-                                          generator=self.generator,  # CPU generator
+            # For multiprocessing, use CPU generator and worker_init_fn
+            train_dataloader = DataLoader(dataset,
+                                          generator=self.generator,
+                                          worker_init_fn=self.worker_init_fn,
                                           **dataloader_kwargs)
         else:
             # For single process, generator can be None
-            train_dataloader = DataLoader(dataset, 
+            train_dataloader = DataLoader(dataset,
                                           **dataloader_kwargs)
 
         normalizer = dataset.get_normalizer()
@@ -111,11 +155,12 @@ class TrainActionDiffusionImageWorkspace(BaseWorkspace):
         val_dataset = dataset.get_validation_dataset()
         
         if val_dataloader_kwargs.get('num_workers', 0) > 0:
-            val_dataloader = DataLoader(val_dataset, 
-                                        generator=self.generator,  # CPU generator
+            val_dataloader = DataLoader(val_dataset,
+                                        generator=self.generator,
+                                        worker_init_fn=self.worker_init_fn,
                                         **val_dataloader_kwargs)
         else:
-            val_dataloader = DataLoader(val_dataset, 
+            val_dataloader = DataLoader(val_dataset,
                                         **val_dataloader_kwargs)
 
         self.model.set_normalizer(normalizer)
