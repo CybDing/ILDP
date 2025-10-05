@@ -26,7 +26,7 @@ from genesis_ILDP.utils.pytorch_util import dict_apply, optimizer_to
 
 from diffusion_policy.common.checkpoint_util import TopKCheckpointManager
 from diffusion_policy.common.json_logger import JsonLogger
-from genesis_ILDP.model.diffusion.ema_model import EMAModel
+from genesis_ILDP.model.common.ema_model import EMAModel
 from diffusion_policy.model.common.lr_scheduler import get_scheduler
 
 OmegaConf.register_new_resolver("eval", eval, replace=True)

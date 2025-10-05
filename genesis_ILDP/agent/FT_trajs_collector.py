@@ -47,8 +47,7 @@ class TrajsCollector:
 
         return collected_trajs
 
-    def load_new_model(self, state_dict):
-        # load the newer version of the model, during fine-tuning 
+    def load_state_dict(self, state_dict):
         self.policy.load_state_dict(state_dict)
 
     

@@ -17,22 +17,30 @@ shape_meta = {
         } 
     }
 }
-policy = ActionDiffusionImagePolicy(shape_meta=shape_meta, diff_steps=300)
+diff_steps = 100
+policy = ActionDiffusionImagePolicy(shape_meta=shape_meta, diff_steps=diff_steps)
 
-_, betas_scheduler_linear = policy.NoiseScheduler(mode='Linear')
-betas_scheduler_root_linear_real, betas_scheduler_root_linear = policy.NoiseScheduler(mode='RootLinear')
-betas_scheduler_cosine_real, betas_scheduler_cosine = policy.NoiseScheduler(mode='Cosine')
-print("beta inside the root linear scheduler", betas_scheduler_cosine_real)
-print("Cum alphas from the Root linear scheduler: ", betas_scheduler_root_linear[-1])
-# print(betas_scheduler_root_linear_real.dtype)
+betas_linear, cum_alphas_linear = policy.NoiseScheduler(mode='Linear')
+betas_root_linear, cum_alphas_root_linear = policy.NoiseScheduler(mode='RootLinear')
+betas_cosine, cum_alphas_cosine = policy.NoiseScheduler(mode='Cosine')
+print("beta inside Cosine scheduler", betas_cosine)
+print("cum_alphas inside Cosine scheduler", cum_alphas_cosine)
+
+idx = diff_steps - 1 
+idx = 1
+variance = betas_cosine[idx] * (1 - cum_alphas_cosine[idx-1]) / (1 - cum_alphas_cosine[idx])
+# variance = betas_linear[idx] * (1 - cum_alphas_linear[idx-1]) / (1 - cum_alphas_linear[idx])
+print(f"variance added to the [idx={idx}] diffusion step(idx = 1 means the last step)", variance)
+# print("Cum alphas from the Root linear scheduler: ", cum_alphas_root_linear[-1])
+# print(cum_alphas_root_linear.dtype)
 plt.figure(figsize=(8, 8))
 
-counts = betas_scheduler_cosine.shape[0]
+counts = betas_cosine.shape[0]
 idx = np.linspace(0, counts-1, counts)
 
-plt.plot(idx, to_numpy(betas_scheduler_linear), label='linear')
-plt.plot(idx, to_numpy(betas_scheduler_cosine), label='cosine')
-plt.plot(idx, to_numpy(betas_scheduler_root_linear), label='root_linear')
+plt.plot(idx, to_numpy(cum_alphas_linear), label='linear')
+plt.plot(idx, to_numpy(cum_alphas_cosine), label='cosine')
+plt.plot(idx, to_numpy(cum_alphas_root_linear), label='root_linear')
 
 plt.legend(loc='best')
 plt.show()

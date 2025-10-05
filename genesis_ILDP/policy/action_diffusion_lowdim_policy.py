@@ -5,8 +5,8 @@ import numpy as np
 import tqdm
 import genesis as gs
 
-from genesis_ILDP.model.vision.conditioned_unet import Unet
-from genesis_ILDP.model.vision.encoding import global_img_encoding, time_encoding, pos_encoding, merge_multimodal_encoding
+from genesis_ILDP.model.conditioned_unet import Unet
+from genesis_ILDP.model.encoding import global_img_encoding, time_encoding, pos_encoding, merge_multimodal_encoding
 from genesis_ILDP.policy.base_image_policy import BaseImagePolicy
 from genesis_ILDP.utils.cuda import to_torch
 from genesis_ILDP.dataset.pusht_image_dataset import PushTImageDataset

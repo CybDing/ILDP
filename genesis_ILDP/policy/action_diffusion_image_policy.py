@@ -6,8 +6,8 @@ import tqdm
 import genesis as gs
 from typing import Union
 
-from genesis_ILDP.model.vision.conditioned_unet import Unet
-from genesis_ILDP.model.vision.encoding import global_img_encoding, time_encoding, pos_encoding, merge_multimodal_encoding
+from genesis_ILDP.model.conditioned_unet import Unet
+from genesis_ILDP.model.encoding import global_img_encoding, time_encoding, pos_encoding, merge_multimodal_encoding
 from genesis_ILDP.policy.base_image_policy import BaseImagePolicy
 from genesis_ILDP.utils.cuda import to_torch
 from genesis_ILDP.dataset.pusht_image_dataset import PushTImageDataset
@@ -41,7 +41,7 @@ class ActionDiffusionImagePolicy(BaseImagePolicy):
                  img_encoding_dim = 1024,
                  time_encoding_dim = 128, 
                  pos_encoding_dim = None,
-
+                 variance_threshold = None, 
                  **kwargs):
         super().__init__()
         
@@ -66,6 +66,11 @@ class ActionDiffusionImagePolicy(BaseImagePolicy):
         self.noise_intensity = noise_intensity
         self.enable_crop = enable_crop
         self.crop_shape = crop_shape
+
+        if variance_threshold is not None: 
+            self.variance_threshold = variance_threshold
+        else: 
+            self.variance_threshold = None
 
         if self.enable_crop:
             # Extract spatial dimensions for validation (assuming shape is [C, H, W])
@@ -94,9 +99,10 @@ class ActionDiffusionImagePolicy(BaseImagePolicy):
             agent_pos_dim = 2 * n_obs_steps
             dim_global_features = img_encoding_dim * 2 + time_encoding_dim + agent_pos_dim
 
-        self.conditioned_unet = Unet(dim_global_features, input_dim=self.action_dim)
+        self.conditioned_unet = Unet(dim_global_features, input_dim=self.action_dim) # forward(x, global_cond)
         self.imgs_encoding_net = global_img_encoding(in_channels=3, encoded_dim=img_encoding_dim, backbone=vision_backbone)
         self.time_encoding = time_encoding  # encoding function for diffusion steps
+        self.merge_multimodal_encoding = merge_multimodal_encoding
 
         if encode_agent_pos:
             self.agent_pos_encoding = pos_encoding(encoded_dim=512)
@@ -336,7 +342,7 @@ class ActionDiffusionImagePolicy(BaseImagePolicy):
             # Use raw agent position - flatten across observation steps
             pos_encoding = agent_pos_stack.reshape(batch_size, -1)  # (B, n_obs_steps * 2)
 
-        global_cond = merge_multimodal_encoding(imgs_encoding, pos_encoding, t_encoding)
+        global_cond = self.merge_multimodal_encoding(imgs_encoding, pos_encoding, t_encoding)
 
         # Predict noise
         noisy_action_input = noisy_action.transpose(1, 2).contiguous()  # (B, Da, T) - ensure contiguous
@@ -402,7 +408,7 @@ class ActionDiffusionImagePolicy(BaseImagePolicy):
             # print(f"[DEBUG DDPM] t_features.shape: {t_features.shape}")
             # print(f"[DEBUG DDPM] Expected total: {imgs_features.shape[1] + pos_features.shape[1] + t_features.shape[1]}")
 
-            global_features_t = merge_multimodal_encoding(imgs_features, pos_features, t_features)
+            global_features_t = self.merge_multimodal_encoding(imgs_features, pos_features, t_features)
             # print(f"[DEBUG DDPM] global_features_t.shape: {global_features_t.shape}")
 
             # Predict noise
@@ -507,7 +513,7 @@ class ActionDiffusionImagePolicy(BaseImagePolicy):
         for step_idx, i in enumerate(reversed(sample_steps)):
             t_features = torch.stack([self.time_encoding(i).to(device=imgs.device)
                                     for _ in range(batch_size)], dim=0)
-            global_features_t = merge_multimodal_encoding(imgs_features, pos_features, t_features)
+            global_features_t = self.merge_multimodal_encoding(imgs_features, pos_features, t_features)
 
             traj_input = predicted_trajs.transpose(1, 2).contiguous()
             predicted_noise = self.conditioned_unet(traj_input, global_features_t)

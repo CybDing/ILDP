@@ -1,4 +1,7 @@
 """
+
+legacy version model eval
+
 python eval.py --checkpoint ./data/checkpoints.ckpt -o ../data/pusht_eval_output -d mps:0
 
 Example with custom runner parameters:
