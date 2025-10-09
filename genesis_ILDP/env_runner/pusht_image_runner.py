@@ -512,9 +512,6 @@ class PushTImageRunner(BaseImageRunner):
         current_global_steps = self.episode_buffer['obs']['img'].shape[0]
         self.episode_buffer['episode_ends'].append(current_global_steps)
 
-        # Increment recording_timesteps to track number of completed episodes
-        self.recording_timesteps += 1
-
         # Clear this environment's temporary buffers for next episode
         self.env_obs_buffer[env_idx] = []
         self.diffusion_action_buffer[env_idx] = []

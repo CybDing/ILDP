@@ -43,7 +43,7 @@ class TrajsCollector:
    
     def collect_trajs(self,):
         _ = self.env_runner.run() 
-        collected_trajs = self.get_saved_trajectories()
+        collected_trajs = self.env_runner.get_saved_trajectories()
 
         return collected_trajs
 
