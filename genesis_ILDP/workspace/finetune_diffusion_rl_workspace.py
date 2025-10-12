@@ -7,16 +7,16 @@ Architecture:
 3. Create PPODiffusion trainer
 4. Training loop:
    - Collect trajectories (TrajsCollector)
-   - Compute GAE advantages (Critic)
-   - Compute old_logprob (FTPolicy)
-   - PPO update (policy + critic)
+   - Compute old_values (Critic)
+   - Compute new_log_prob(Actor): Compute new_prob with given obs and old predicted noise probability under the new up_to_date policy
+   - PPO loss calculation (PPODiffusion): compute ploss for policy model and vloss for value inside the critic model
 """
 
 if __name__ == "__main__":
     import sys
     import pathlib
     import os
-    ROOT_DIR = str(pathlib.Path(__file__).parent.parent.parent)
+    ROOT_DIR = str(pathlib.Path(__file__).parent.parent.parent) # change to the ILDP folder as parent folder
     sys.path.append(ROOT_DIR)
     os.chdir(ROOT_DIR)
 

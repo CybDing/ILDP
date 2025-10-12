@@ -73,7 +73,7 @@ task:
     pad_before: ${eval:'${n_obs_steps}-1'}     # 1
     pad_after: ${eval:'${n_action_steps}-1'}   # 7  
     seed: 42
-    val_ratio: 0.05
+    val_ratio: 0.03
     max_train_episodes: 128
   
   # Environment runner (optional for training, but good for evaluation)
@@ -84,10 +84,10 @@ task:
     max_steps: 600
     n_action_steps: ${n_action_steps}
     n_obs_steps: ${n_obs_steps}
-    n_test: 10
-    n_test_vis: 10
+    n_test: 25
+    n_test_vis: 5
     n_train: 5  
-    n_train_vis: 5
+    n_train_vis: 1
     # past_action: ${past_action_visible}
     test_start_seed: 50000
     train_start_seed: 0
@@ -102,6 +102,8 @@ training:
   device: cuda:0
   num_epochs: 500             # Standard training epochs
   batch_size: 128               # Batch size
+  deterministic: true          # Enable deterministic algorithms for reproducibility
+  worker_seed_strategy: offset # offset | independent (controls DataLoader worker seeding)
   
   # Learning and optimization
   lr_scheduler: cosine
@@ -109,9 +111,9 @@ training:
   gradient_accumulate_every: 1
   
   # Checkpointing and evaluation
-  checkpoint_every: 50         # Save checkpoint every 50 epochs
+  checkpoint_every: 25         # Save checkpoint every 50 epochs
   val_every: 5                 # Validate every epoch  
-  rollout_every: 50            # Run environment rollout every 50 epochs
+  rollout_every: 25            # Run environment rollout every 50 epochs
   sample_every: 5              # Sample predictions every 5 epochs
   
   # Limits (null means no limit)
@@ -139,6 +141,7 @@ dataloader:
   persistent_workers: false
   pin_memory: true
   shuffle: true
+  drop_last: true              # keep batch sizes consistent across epochs for determinism
 
 val_dataloader:
   batch_size: ${training.batch_size}
@@ -149,7 +152,7 @@ val_dataloader:
 
 # === EMA (Exponential Moving Average) CONFIGURATION ===
 ema:
-  _target_: genesis_ILDP.model.diffusion.ema_model.EMAModel
+  _target_: genesis_ILDP.model.common.ema_model.EMAModel
   inv_gamma: 1.0
   max_value: 0.9999
   min_value: 0.0
@@ -168,7 +171,7 @@ checkpoint:
 
 # === LOGGING CONFIGURATION ===
 logging:
-  mode: disabled               # 'online', 'offline', or 'disabled'
+  mode: online               # 'online', 'offline', or 'disabled'
   project: genesis_ILDP_action_diffusion
   group: action_diffusion_pusht
   name: ${exp_name}_${now:%Y.%m.%d-%H.%M.%S}

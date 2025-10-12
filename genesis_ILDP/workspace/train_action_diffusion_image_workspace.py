@@ -17,6 +17,7 @@ import random
 import wandb
 import tqdm
 import numpy as np
+from typing import Optional
 
 from genesis_ILDP.workspace.base_workspace import BaseWorkspace
 from genesis_ILDP.policy.action_diffusion_image_policy import ActionDiffusionImagePolicy
@@ -31,6 +32,57 @@ from diffusion_policy.model.common.lr_scheduler import get_scheduler
 
 OmegaConf.register_new_resolver("eval", eval, replace=True)
 
+def configure_seed(
+    seed: int,
+    deterministic: bool = False,
+    device: Optional[torch.device] = None,
+    generator_device: Optional[torch.device | str] = None,
+) -> torch.Generator:
+    """Configure global RNG state for reproducible training."""
+    random.seed(seed)
+    np.random.seed(seed)
+    torch.manual_seed(seed)
+
+    if torch.cuda.is_available():
+        torch.cuda.manual_seed_all(seed)
+
+    if getattr(torch, "mps", None) is not None and hasattr(torch.backends, "mps") and torch.backends.mps.is_available():
+        # torch.manual_seed already covers MPS tensors, but keep explicit for clarity when available
+        if hasattr(torch.mps, "manual_seed"):
+            torch.mps.manual_seed(seed)
+
+    if deterministic:
+        if hasattr(torch, "use_deterministic_algorithms"):
+            torch.use_deterministic_algorithms(True, warn_only=True)
+        if torch.backends.cudnn.is_available():
+            torch.backends.cudnn.deterministic = True
+            torch.backends.cudnn.benchmark = False
+    else:
+        if hasattr(torch, "use_deterministic_algorithms"):
+            torch.use_deterministic_algorithms(False)
+        if torch.backends.cudnn.is_available():
+            torch.backends.cudnn.deterministic = False
+            torch.backends.cudnn.benchmark = True
+
+    if generator_device is None:
+        generator_device = "cpu"
+
+    if isinstance(generator_device, torch.device):
+        generator_device_str = str(generator_device)
+    else:
+        generator_device_str = generator_device
+
+    if isinstance(generator_device_str, str) and generator_device_str.startswith("cuda"):
+        generator = torch.Generator(device=generator_device_str)
+    else:
+        generator = torch.Generator()
+    generator.manual_seed(seed)
+
+    if device is not None and device.type == "cuda" and not torch.cuda.is_available():
+        raise RuntimeError("Requested CUDA device but CUDA is not available.")
+
+    return generator
+
 class TrainActionDiffusionImageWorkspace(BaseWorkspace):
     """
     Training workspace specifically for ActionDiffusionImagePolicy.
@@ -42,39 +94,29 @@ class TrainActionDiffusionImageWorkspace(BaseWorkspace):
         super().__init__(cfg, output_dir=output_dir)
 
         device = torch.device(cfg.training.device)
-        # device = torch.device("mps:0")  # Comment out hardcoded MPS setting
         seed = cfg.training.seed
+        deterministic = bool(cfg.training.get('deterministic', False))
+        worker_seed_strategy = cfg.training.get('worker_seed_strategy', 'offset')
 
-        # Create CPU generator for DataLoader (multiprocessing compatibility)
-        self.generator = torch.Generator()  # Use CPU generator for multiprocessing compatibility
-        self.generator.manual_seed(seed)
+        generator_device = device if device.type == 'cuda' else torch.device('cpu')
+        self.generator = configure_seed(
+            seed,
+            deterministic,
+            device=device,
+            generator_device=generator_device
+        )
 
-        # Set all random seeds for reproducibility
-        np.random.seed(seed)
-        random.seed(seed)
-        torch.manual_seed(seed)
-        if device.type == 'cuda':
-            torch.cuda.manual_seed_all(seed)
-
-            # Optional: Enable deterministic operations for full reproducibility
-            # Trade-off: ~10-20% slower training but guarantees exact reproducibility
-            # Can be disabled if you only need approximate reproducibility
-            use_deterministic = cfg.training.get('use_deterministic', False)
-            if use_deterministic:
-                torch.backends.cudnn.deterministic = True
-                torch.backends.cudnn.benchmark = False
-                print("Using deterministic CuDNN operations (slower but fully reproducible)")
+        def worker_init_fn(worker_id: int):
+            """Ensure each DataLoader worker uses a deterministic RNG sequence."""
+            if worker_seed_strategy == 'offset':
+                worker_seed = seed + worker_id
+            elif worker_seed_strategy == 'independent':
+                worker_seed = seed
             else:
-                torch.backends.cudnn.deterministic = False
-                torch.backends.cudnn.benchmark = True
-                print("Using non-deterministic CuDNN operations (faster but approximate reproducibility)")
-
-        # Worker init function for DataLoader multiprocessing
-        def worker_init_fn(worker_id):
-            """Ensure each DataLoader worker has unique but reproducible seed"""
-            worker_seed = seed + worker_id
+                raise ValueError(f"Unknown worker_seed_strategy: {worker_seed_strategy}")
             np.random.seed(worker_seed)
             random.seed(worker_seed)
+            torch.manual_seed(worker_seed)
 
         self.worker_init_fn = worker_init_fn
 
@@ -99,21 +141,9 @@ class TrainActionDiffusionImageWorkspace(BaseWorkspace):
 
         # Print reproducibility information
         print("\n=== Reproducibility Configuration ===")
-        if device.type == 'cuda':
-            deterministic_mode = cfg.training.get('use_deterministic', False)
-            if deterministic_mode:
-                print("⚠️  CuDNN Deterministic: ENABLED (slower but fully reproducible)")
-            else:
-                print("⚠️  CuDNN Deterministic: DISABLED (faster but approximate reproducibility)")
-        print("\nNote: Even with same seed, training may produce slightly different results due to:")
-        print("  1. Random noise sampling in diffusion training (different per batch)")
-        print("  2. Random image cropping augmentation")
-        print("  3. GPU parallelism and floating-point rounding")
-        print("  4. DataLoader worker thread scheduling")
-        print("For best reproducibility:")
-        print("  - Use use_deterministic: true in config")
-        print("  - Run on same hardware/GPU")
-        print("  - Use same PyTorch/CUDA version")
+        print(f"Deterministic mode: {'ENABLED' if deterministic else 'DISABLED'}")
+        print("Global seed:", seed)
+        print("DataLoader worker seed strategy:", worker_seed_strategy)
         print("=====================================\n")
 
     def run(self):
@@ -136,32 +166,35 @@ class TrainActionDiffusionImageWorkspace(BaseWorkspace):
         val_dataloader_kwargs = dict(cfg.val_dataloader)
 
         device = torch.device(cfg.training.device)
+
+        def to_device_safe(x):
+            if hasattr(x, 'to'):
+                if device.type == 'mps' and getattr(x, 'dtype', None) == torch.float64:
+                    x = x.to(torch.float32)
+                return x.to(device, non_blocking=True)
+            return x
         
-        # Fix generator usage for DataLoader
-        if dataloader_kwargs.get('num_workers', 0) > 0:
-            # For multiprocessing, use CPU generator and worker_init_fn
-            train_dataloader = DataLoader(dataset,
-                                          generator=self.generator,
-                                          worker_init_fn=self.worker_init_fn,
-                                          **dataloader_kwargs)
-        else:
-            # For single process, generator can be None
-            train_dataloader = DataLoader(dataset,
-                                          **dataloader_kwargs)
+        # DataLoader: pin_memory=True requires no generator (CUDA optimization)
+        if dataloader_kwargs.get('shuffle', False):
+            dataloader_kwargs['generator'] = self.generator
+
+        train_dataloader = DataLoader(
+            dataset,
+            worker_init_fn=self.worker_init_fn if dataloader_kwargs.get('num_workers', 0) > 0 else None,
+            **dataloader_kwargs
+        )
 
         normalizer = dataset.get_normalizer()
 
         # configure validation dataset
         val_dataset = dataset.get_validation_dataset()
-        
-        if val_dataloader_kwargs.get('num_workers', 0) > 0:
-            val_dataloader = DataLoader(val_dataset,
-                                        generator=self.generator,
-                                        worker_init_fn=self.worker_init_fn,
-                                        **val_dataloader_kwargs)
-        else:
-            val_dataloader = DataLoader(val_dataset,
-                                        **val_dataloader_kwargs)
+
+        # Validation DataLoader (same as train)
+        val_dataloader = DataLoader(
+            val_dataset,
+            worker_init_fn=self.worker_init_fn if val_dataloader_kwargs.get('num_workers', 0) > 0 else None,
+            **val_dataloader_kwargs
+        )
 
         self.model.set_normalizer(normalizer)
         if cfg.training.use_ema:
@@ -249,15 +282,6 @@ class TrainActionDiffusionImageWorkspace(BaseWorkspace):
                 with tqdm.tqdm(train_dataloader, desc=f"Training epoch {self.epoch}", 
                         leave=False, mininterval=cfg.training.tqdm_interval_sec) as tepoch:
                     for batch_idx, batch in enumerate(tepoch):
-                        # device transfer with MPS compatibility
-                        def to_device_safe(x):
-                            if hasattr(x, 'to'):
-                                # Convert float64 to float32 for MPS compatibility
-                                if device.type == 'mps' and x.dtype == torch.float64:
-                                    x = x.to(torch.float32)
-                                return x.to(device, non_blocking=True)
-                            return x
-                        
                         batch = dict_apply(batch, to_device_safe)
                         
                         if train_sampling_batch is None:
@@ -329,8 +353,9 @@ class TrainActionDiffusionImageWorkspace(BaseWorkspace):
                 if env_runner is not None and (self.epoch % cfg.training.rollout_every) == 0:
                     try:
                         print(f"Running rollout evaluation at epoch {self.epoch}")
-                        runner_log = env_runner.run(policy)
-                        # log all rollout metrics
+                        # Pass wandb_run to runner (videos logged separately inside runner)
+                        runner_log = env_runner.run(policy, wandb_run=wandb_run)
+                        # runner_log is JSON-safe (no videos), merge into step_log
                         step_log.update(runner_log)
                         print(f"Rollout completed: {list(runner_log.keys())}")
                     except Exception as e:
@@ -347,14 +372,6 @@ class TrainActionDiffusionImageWorkspace(BaseWorkspace):
                         with tqdm.tqdm(val_dataloader, desc=f"Validation epoch {self.epoch}", 
                                 leave=False, mininterval=cfg.training.tqdm_interval_sec) as tepoch:
                             for batch_idx, batch in enumerate(tepoch):
-                                def to_device_safe(x):
-                                    if hasattr(x, 'to'):
-                                        # Convert float64 to float32 for MPS compatibility
-                                        if device.type == 'mps' and x.dtype == torch.float64:
-                                            x = x.to(torch.float32)
-                                        return x.to(device, non_blocking=True)
-                                    return x
-                                
                                 batch = dict_apply(batch, to_device_safe)
                                 loss = self.model.compute_loss(batch)
                                 val_losses.append(loss.item())
@@ -393,22 +410,13 @@ class TrainActionDiffusionImageWorkspace(BaseWorkspace):
                             # pred_horizon = getattr(self.model, 'horizon', 16)  # Get prediction horizon
                             # gt_action_sliced = gt_action[:, n_obs_steps:n_obs_steps+pred_horizon]
 
-                            print(f"Sliced shapes - obs image: {obs_dict_sliced['image'].shape}, obs agent_pos: {obs_dict_sliced['agent_pos'].shape}, gt_action: {gt_action_sliced.shape}")
+                            # print(f"Sliced shapes - obs image: {obs_dict_sliced['image'].shape}, obs agent_pos: {obs_dict_sliced['agent_pos'].shape}, gt_action: {gt_action_sliced.shape}")
 
                             result = policy.predict_action(obs_dict_sliced)
                             pred_action = result['action_pred']
-                            mse = torch.nn.functional.mse_loss(pred_action, gt_action)
+                            mse = torch.nn.functional.mse_loss(pred_action[:, :, :2], gt_action)                            
                             step_log['train_action_mse_error'] = mse.item()
                             print(f"Sample MSE: {mse.item():.4f}")
-                            
-                            del batch
-                            del obs_dict
-                            del gt_action
-                            del obs_dict_sliced
-                            del gt_action_sliced
-                            del result
-                            del pred_action
-                            del mse
                         except Exception as e:
                             print(f"Warning: Sampling evaluation failed: {e}")
                             import traceback

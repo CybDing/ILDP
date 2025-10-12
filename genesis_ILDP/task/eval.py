@@ -38,7 +38,7 @@ from genesis_ILDP.workspace.base_workspace import BaseWorkspace
 @click.option('--n_test_vis', default=None, type=int, help='Number of test episodes with visualization (overrides config)')
 @click.option('--n_train', default=0, type=int, help='Number of train episodes (overrides config)')
 @click.option('--n_train_vis', default=0, type=int, help='Number of train episodes with visualization (overrides config)')
-@click.option('--test_start_seed', default=50192, type=int, help='Starting seed for test episodes (overrides config)')
+@click.option('--test_start_seed', default=50023, type=int, help='Starting seed for test episodes (overrides config)')
 @click.option('--train_start_seed', default=0, type=int, help='Starting seed for train episodes (overrides config)')
 @click.option('--max_steps', default=600, type=int, help='Maximum steps per episode (overrides config)')
 @click.option('--fps', default=30, type=int, help='Video FPS for rendering (overrides config)')

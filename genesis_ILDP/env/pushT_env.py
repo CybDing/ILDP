@@ -33,8 +33,8 @@ class PushTEnv(gym.Env):
                  show_fps = True,
                  device = None,
                  done_ratio = 0.85,
-                 spawn_center=(0.0, 0.3),  # Center of spawn region (x, y)
-                 spawn_range_scale=1.0     # Scale factor for spawn range (1.0 = use xlim/ylim)
+                 spawn_center=(-0.3, 0.3),  # Center of spawn region (x, y)
+                 spawn_range_scale=0.6     # Scale factor for spawn range (1.0 = use xlim/ylim)
                  ):
 
         self.render_size = render_size
