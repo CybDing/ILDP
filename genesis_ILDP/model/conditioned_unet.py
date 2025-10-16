@@ -52,14 +52,20 @@ class down_conv(nn.Module):
     
 
 class FiLMLayer(nn.Module):
-    def __init__(self, dim_global_feature, out_channels):
+    def __init__(self, dim_global_feature, out_channels, dropout=0.0):
         super().__init__()
         self.out_channels = out_channels
-        self.model = nn.Sequential(
+
+        # Build MLP with optional dropout for regularization
+        layers = [
             nn.Linear(dim_global_feature, dim_global_feature * 2),
-            nn.ReLU(),
-            nn.Linear(dim_global_feature * 2, 2 * out_channels)  # 输出2*C用于scale和bias
-        )
+            nn.ReLU()
+        ]
+        if dropout > 0:
+            layers.append(nn.Dropout(dropout))
+        layers.append(nn.Linear(dim_global_feature * 2, 2 * out_channels))  # 输出2*C用于scale和bias
+
+        self.model = nn.Sequential(*layers)
     
     def forward(self, global_features, x):
         # x: (B, C, T) for 1D conv or (B, C, H, W) for 2D conv
@@ -78,27 +84,27 @@ class FiLMLayer(nn.Module):
         return scale * x + bias
 
 class Unet(nn.Module):
-    def __init__(self, dim_global_features, input_dim=2):
+    def __init__(self, dim_global_features, input_dim=2, dropout=0.0):
         super().__init__()
         channels = [input_dim, 256, 512, 1024]
-        
+
         self.down_convs = nn.ModuleList()
         self.down_samples = nn.ModuleList()
 
         self.film_layers_down = nn.ModuleList(
-            [FiLMLayer(dim_global_features, channels[i+1]) for i in range(len(channels)-1)]
+            [FiLMLayer(dim_global_features, channels[i+1], dropout=dropout) for i in range(len(channels)-1)]
         )
-        
+
         for i in range(len(channels)-1):
             self.down_convs.append(conv_block(channels[i], channels[i+1]))
             if i < len(channels)-2:  # 最后一层不需要下采样
                 self.down_samples.append(down_conv(channels[i+1], channels[i+1]))
-        
+
         self.up_samples = nn.ModuleList()
         self.up_convs = nn.ModuleList()
-        
+
         self.film_layers_up = nn.ModuleList(
-            [FiLMLayer(dim_global_features, channels[i]) for i in range(len(channels) - 2, 0, -1)]
+            [FiLMLayer(dim_global_features, channels[i], dropout=dropout) for i in range(len(channels) - 2, 0, -1)]
         )
         
         for i in range(len(channels)-2, 0, -1):  # 从倒数第二层开始

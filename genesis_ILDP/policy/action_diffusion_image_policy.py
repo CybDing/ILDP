@@ -27,6 +27,7 @@ class ActionDiffusionImagePolicy(BaseImagePolicy):
                  shape_meta: dict,
                  normalizer: LinearNormalizer = None,
                  vision_backbone: str = 'custom',
+                 vision_pretrained: bool = False,  # Whether to use pretrained vision backbone
                  diff_steps: int = 100,
                  scheduler_mode: str = 'Linear',
                  obs_steps: int = 2,
@@ -38,10 +39,16 @@ class ActionDiffusionImagePolicy(BaseImagePolicy):
                  noise_intensity: float = 0.0,  # DDIM noise intensity
                  crop_shape = (3, 76, 76),  # Crop dimensions (height, width) for random cropping
                  enable_crop = True,  # Whether to enable random cropping for data augmentation
-                 img_encoding_dim = 1024,
-                 time_encoding_dim = 128, 
+                 img_encoding_dim = 512,
+                 time_encoding_dim = 128,
                  pos_encoding_dim = None,
-                 variance_threshold = None, 
+                 variance_threshold = None,
+                 use_spatial_softmax: bool = False,  # Use spatial softmax pooling
+                 spatial_softmax_temp: float = 1.0,  # Temperature for spatial softmax
+                 vision_encoder_dropout: float = 0.0,  # Dropout rate for vision encoder MLP
+                 pos_encoder_dropout: float = 0.0,  # Dropout rate for position encoder MLP
+                 unet_dropout: float = 0.0,  # Dropout rate for UNet FiLM layers
+                 time_encoder_dropout: float = 0.0,  # Dropout rate for time encoding MLP
                  **kwargs):
         super().__init__()
         
@@ -67,6 +74,10 @@ class ActionDiffusionImagePolicy(BaseImagePolicy):
         self.enable_crop = enable_crop
         self.crop_shape = crop_shape
 
+        # Note: img_encoding_dim will be updated after encoder initialization
+        self.time_encoding_dim = time_encoding_dim
+        self.pos_encoding_dim = pos_encoding_dim
+
         if variance_threshold is not None: 
             self.variance_threshold = variance_threshold
         else: 
@@ -88,24 +99,52 @@ class ActionDiffusionImagePolicy(BaseImagePolicy):
             self.cropper = None
             print(f"Random cropping disabled, using full image: {raw_img_shape}")
 
-        img_encoding_dim = img_encoding_dim # 1024 
-        time_encoding_dim = time_encoding_dim # 128
+        # img_encoding_dim = img_encoding_dim # 1024 
+        # time_encoding_dim = time_encoding_dim # 128
         if encode_agent_pos:
             if pos_encoding_dim is None:
-                pos_encoding_dim = 512
-
-            dim_global_features = img_encoding_dim * 2 + time_encoding_dim + pos_encoding_dim
+                self.pos_encoding_dim =128 # default encoding dim for pos_encoding when enabling it
+            dim_global_features = img_encoding_dim * 2 + time_encoding_dim + pos_encoding_dim * 2
         else:
             agent_pos_dim = 2 * n_obs_steps
+            self.pos_encoding_dim = 2
             dim_global_features = img_encoding_dim * 2 + time_encoding_dim + agent_pos_dim
 
-        self.conditioned_unet = Unet(dim_global_features, input_dim=self.action_dim) # forward(x, global_cond)
-        self.imgs_encoding_net = global_img_encoding(in_channels=3, encoded_dim=img_encoding_dim, backbone=vision_backbone)
-        self.time_encoding = time_encoding  # encoding function for diffusion steps
+        # Initialize vision encoder first to get actual output dimensions
+        # Extract spatial dimensions from crop_shape: (C, H, W)
+        input_img_shape = (crop_shape[1], crop_shape[2]) if enable_crop else (raw_img_shape[1], raw_img_shape[2])
+
+        self.imgs_encoding_net = global_img_encoding(
+            in_channels=3,
+            encoded_dim=img_encoding_dim,
+            backbone=vision_backbone,
+            pretrained=vision_pretrained,
+            use_spatial_softmax=use_spatial_softmax,
+            spatial_softmax_temp=spatial_softmax_temp,
+            input_image_shape=input_img_shape,
+            dropout=vision_encoder_dropout
+        )
+
+        # Get the actual output dimension from the encoder
+        # (will be 1024 if spatial_softmax is used with img_encoding_dim=512)
+        actual_img_encoding_dim = self.imgs_encoding_net.get_feature_dim()
+        self.img_encoding_dim = actual_img_encoding_dim  # Update to actual dimension
+        print(f"Vision encoder output dimension: {actual_img_encoding_dim} (spatial_softmax={use_spatial_softmax})")
+
+        # Recalculate global features dimension with actual img encoding dim
+        if encode_agent_pos:
+            dim_global_features = actual_img_encoding_dim * 2 + time_encoding_dim + (pos_encoding_dim if pos_encoding_dim else 128) * 2
+        else:
+            dim_global_features = actual_img_encoding_dim * 2 + time_encoding_dim + agent_pos_dim
+
+        self.conditioned_unet = Unet(dim_global_features, input_dim=self.action_dim, dropout=unet_dropout)  # forward(x, global_cond)
+
+        # Initialize time encoding module (now a nn.Module with MLP processing)
+        self.time_encoding_net = time_encoding(t_emb_dim=time_encoding_dim, dropout=time_encoder_dropout)
         self.merge_multimodal_encoding = merge_multimodal_encoding
 
         if encode_agent_pos:
-            self.agent_pos_encoding = pos_encoding(encoded_dim=512)
+            self.agent_pos_encoding = pos_encoding(encoded_dim=self.pos_encoding_dim, dropout=pos_encoder_dropout)
         else:
             self.agent_pos_encoding = None  # Use raw agent_pos
 
@@ -185,7 +224,7 @@ class ActionDiffusionImagePolicy(BaseImagePolicy):
             return images
 
         # Debug: Print input shape
-        print(f"_apply_crop: Input images shape: {images.shape}, training: {training}")
+        # print(f"_apply_crop: Input images shape: {images.shape}, training: {training}")
 
         # Ensure cropper is on the same device as images
         if hasattr(self.cropper, 'to'):
@@ -199,11 +238,11 @@ class ActionDiffusionImagePolicy(BaseImagePolicy):
         cropped_images = self.cropper(images)
 
         # Debug: Print output shape
-        print(f"_apply_crop: Output images shape: {cropped_images.shape}")
+        # print(f"_apply_crop: Output images shape: {cropped_images.shape}")
 
         return cropped_images
 
-    def predict_action(self, obs_dict: Dict[str, torch.Tensor], recording_diffusion) -> Dict[str, torch.Tensor]:
+    def predict_action(self, obs_dict: Dict[str, torch.Tensor], recording_diffusion=False) -> Dict[str, torch.Tensor]:
         """
         Predict actions given observations.
         """
@@ -252,7 +291,13 @@ class ActionDiffusionImagePolicy(BaseImagePolicy):
         # action_pred = self.action_generation_ddim(nimgs, nagent_pos, batch_size,
         #                                          sample_steps=ddim_steps, noise_intensity=noise_intensity)
 
-        action_pred = self.action_generation_ddpm(nimgs, nagent_pos, batch_size, recording_diffusion)
+        result = self.action_generation_ddpm(nimgs, nagent_pos, batch_size, recording_diffusion)
+
+        # Handle return value based on recording_diffusion flag
+        if recording_diffusion:
+            action_pred, action_diffusion_buffer = result
+        else:
+            action_pred = result
 
         # Extract action steps for execution (typically the first n_action_steps)
         start = self.n_obs_steps - 1
@@ -261,10 +306,15 @@ class ActionDiffusionImagePolicy(BaseImagePolicy):
 
         print(f"predict_action output shapes - action: {action.shape}, action_pred: {action_pred.shape}")
 
-        return {
+        result_dict = {
             'action': action,
             'action_pred': action_pred
         }
+
+        if recording_diffusion:
+            result_dict['action_diffusion_buffer'] = action_diffusion_buffer
+
+        return result_dict
 
     def set_normalizer(self, normalizer: LinearNormalizer):
         """Set the data normalizer."""
@@ -331,7 +381,7 @@ class ActionDiffusionImagePolicy(BaseImagePolicy):
         noisy_action = sqrt_alpha_cumprod * action + sqrt_one_minus_alpha_cumprod * random_noise
 
         # Encode observations and time
-        t_encoding = torch.stack([self.time_encoding(t.item()) for t in random_t], dim=0)
+        t_encoding = torch.stack([self.time_encoding_net(t.item()) for t in random_t], dim=0)
         # Apply cropping before vision encoding (training mode)
         imgs_cropped = self._apply_crop(imgs_stack, training=True)
         imgs_encoding = self.imgs_encoding_net(imgs_cropped).reshape(batch_size, -1)
@@ -375,13 +425,15 @@ class ActionDiffusionImagePolicy(BaseImagePolicy):
             # Use raw agent position
             pos_features_batched = pos_batched  # No encoding, use raw values
 
-        imgs_features = imgs_features_batched.reshape(batch_size, self.n_obs_steps * 1024)
+        imgs_features = imgs_features_batched.reshape(batch_size, self.n_obs_steps * self.img_encoding_dim)
 
-        if self.encode_agent_pos:
-            pos_features = pos_features_batched.reshape(batch_size, self.n_obs_steps * 512)
-        else:
+        # if self.encode_agent_pos:
+        #     pos_features = pos_features_batched.reshape(batch_size, self.n_obs_steps * self.pos_encoding_dim)
+        # else:
             # Raw agent_pos is already (batch_size * n_obs_steps, 2)
-            pos_features = pos_features_batched.reshape(batch_size, self.n_obs_steps * 2)
+            
+        # if not encode the agent_pos, the encoding dim is written 2 so that the results could be consistenet without or with encoding
+        pos_features = pos_features_batched.reshape(batch_size, self.n_obs_steps * self.pos_encoding_dim)
 
         # Initialize with random noise
         # print(f"action_generation_ddpm: batch_size={batch_size}, traj_shape={self.traj_shape}")
@@ -399,7 +451,7 @@ class ActionDiffusionImagePolicy(BaseImagePolicy):
 
         for step_idx, t in enumerate(reversed(range(1, self.diff_steps + 1))):
             # Time encoding
-            t_features = torch.stack([self.time_encoding(t).to(device=imgs.device)
+            t_features = torch.stack([self.time_encoding_net(t).to(device=imgs.device)
                                     for _ in range(batch_size)], dim=0)
 
             # # DEBUG: Print dimensions for debugging
@@ -447,21 +499,20 @@ class ActionDiffusionImagePolicy(BaseImagePolicy):
         action_dict = {"action": predicted_trajs}
         action_unnormalized = self.normalizer.unnormalize(action_dict)
         predicted_trajs_unnormalized = action_unnormalized["action"]
-        
+
         # Add constant dimension (0.27) to the end
         # predicted_trajs_unnormalized shape: (batch_size, horizon, action_dim)
         batch_size, horizon, action_dim = predicted_trajs_unnormalized.shape
-        const_dim = torch.full((batch_size, horizon, 1), 0.27, 
-                              device=predicted_trajs_unnormalized.device, 
+        const_dim = torch.full((batch_size, horizon, 1), 0.27,
+                              device=predicted_trajs_unnormalized.device,
                               dtype=predicted_trajs_unnormalized.dtype)
         predicted_trajs_with_const = torch.cat([predicted_trajs_unnormalized, const_dim], dim=-1)
-        
-        action_diffusion_buffer = torch.stack(action_buffer, dim=0).transpose(dim0=0, dim1=1)
-        # (diff_steps + 1, cur_envs, horizons, Da) -> (cur_envs, diff_steps + 1, horizons, Da)
-        
+
         if not recording_diffusion:
             return predicted_trajs_with_const
-        else: 
+        else:
+            action_diffusion_buffer = torch.stack(action_buffer, dim=0).transpose(dim0=0, dim1=1)
+            # (diff_steps + 1, cur_envs, horizons, Da) -> (cur_envs, diff_steps + 1, horizons, Da)
             return (predicted_trajs_with_const, action_diffusion_buffer)
     
     def action_generation_ddim(self, imgs, agent_pos, batch_size, sample_steps=None, noise_intensity=0.0):
@@ -487,13 +538,13 @@ class ActionDiffusionImagePolicy(BaseImagePolicy):
 
         if self.encode_agent_pos:
             pos_features_batched = self.agent_pos_encoding(pos_batched)
-            pos_features = pos_features_batched.reshape(batch_size, self.n_obs_steps * 512)
+            pos_features = pos_features_batched.reshape(batch_size, self.n_obs_steps * self.pos_encoding_dim)
         else:
             # Use raw agent position
             pos_features_batched = pos_batched  # No encoding, use raw values
-            pos_features = pos_features_batched.reshape(batch_size, self.n_obs_steps * 2)
+            pos_features = pos_features_batched.reshape(batch_size, self.n_obs_steps * self.pos_encoding_dim)
 
-        imgs_features = imgs_features_batched.reshape(batch_size, self.n_obs_steps * 1024)
+        imgs_features = imgs_features_batched.reshape(batch_size, self.n_obs_steps * self.img_encoding_dim)
         
         predicted_trajs = torch.randn(size=(batch_size, *self.traj_shape), device=imgs.device)
 
@@ -511,7 +562,7 @@ class ActionDiffusionImagePolicy(BaseImagePolicy):
 
         # DDIM reverse process
         for step_idx, i in enumerate(reversed(sample_steps)):
-            t_features = torch.stack([self.time_encoding(i).to(device=imgs.device)
+            t_features = torch.stack([self.time_encoding_net(i).to(device=imgs.device)
                                     for _ in range(batch_size)], dim=0)
             global_features_t = self.merge_multimodal_encoding(imgs_features, pos_features, t_features)
 

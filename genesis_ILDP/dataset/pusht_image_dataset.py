@@ -171,7 +171,7 @@ def test():
     zarr_path = '../data/train_data/pusht/pusht_test_0919_3.zarr'
     zarr_path = '../data/train_data/pusht/pusht_train_0920.zarr'
     zarr_path = '../data/train_data/pusht/pusht_cchi_v7_replay.zarr'
-    zarr_path = '../data/train_data/pusht/genesis_data_20250921_004830.zarr' 
+    zarr_path = '../data/train_data/pusht/merged_data_0925.zarr' 
     # zarr_path = '../data/train_data/pusht/genesis_data_merged_20250925_015354.zarr' 
     
     dataset = PushTImageDataset(zarr_path, horizon=16)
@@ -192,7 +192,7 @@ def test():
 
     # Add visualization after existing test code
     # print("\nVisualizing images...")
-    visualize_sequence_images(dataset, idx=30, max_frames=16)
+    visualize_sequence_images(dataset, idx=2920, max_frames=16)
     
     # # Display a single frame
     # sample = dataset.__getitem__(-30)

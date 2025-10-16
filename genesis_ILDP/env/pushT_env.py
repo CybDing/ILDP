@@ -161,12 +161,27 @@ class PushTEnv(gym.Env):
                 )
         )
         
+        # self.cam = self.scene.add_camera(
+        #     res=self.render_size,
+        #     pos=(0, 0.3, 0.9),
+        #     lookat=(-0.4, 0.4, 0),
+        #     fov=65,
+        #     GUI=show_camera,
+        # )
+
         self.cam = self.scene.add_camera(
             res=self.render_size,
-            pos=(0, 0.3, 0.9),
-            lookat=(-0.4, 0.4, 0),
+            pos=(-0.3, 0.3, 0.8),
+            lookat=(-0.3, 0.3, 0),
             fov=65,
             GUI=show_camera,
+        )
+
+        self.cam_attached = self.scene.add_camera(
+            res=self.render_size, 
+            GUI=show_camera,
+            fov=65,
+ 
         )
         
         self.scene.build(n_envs=n_envs)
@@ -178,12 +193,23 @@ class PushTEnv(gym.Env):
         self.cube_dofs_idx  = self.cube.get_joint('cube_plane_joint').dof_idx_local
         self.tcp: gs.engine.entities.rigid_entity.RigidLink = self.robot.get_link('tcp')
         self.eef: gs.engine.entities.rigid_entity.RigidLink = self.robot.get_link('flange_with_ori') 
+        self.gripper: gs.engine.entities.rigid_entity_RigidJoint = self.robot.get_joint('finger_width_joint')  
+        self.gripper_idx = self.gripper.dof_idx_local      
         self.eef_idx = self.eef.idx_local
         self.tcp_idx = self.tcp.idx_local
 
+        # link's idx_local respect to its parent object
         self.marker_idx = self.plane.get_link('marker').idx_local
         self.marker_dofs_idx = self.plane.get_joint('marker_joint').dof_idx_local
         self.Tcube_idx = self.cube.get_link('center').idx_local
+
+        offset_T = torch.Tensor(
+            [[1, 0, 0, -0.1],
+             [0, 1, 0, 0], 
+             [0, 0, -1, -0.09], 
+             [0, 0, 0, 1]]
+        )
+        self.cam_attached.attach(rigid_link = self.eef, offset_T = offset_T)
 
         self.robot.set_dofs_kp(
             kp             = np.array([4500, 4500, 3500, 3500, 2000, 2000, 2000, 100]),
@@ -404,20 +430,19 @@ class PushTEnv(gym.Env):
             else: 
                quat = torch.tile(torch.tensor([0, 0, 1, 0], device=self.device), (len(envs_idx), 1))
                qpos = self._ikine(self.eef, action, quat, envs_idx)
-            #    print(qpos)
+            #  print(qpos)
             self.robot.control_dofs_position(position=qpos[:, 0:7], # does not control tcp joints
                                         dofs_idx_local=self.robot_dofs_idx[0:7], 
                                         envs_idx=envs_idx
                                         )
-            self.robot.set_dofs_position(position=torch.zeros(len(envs_idx), len(self.robot_dofs_idx) - 7),
-                                        dofs_idx_local=self.robot_dofs_idx[7:],
-                                        envs_idx=envs_idx,
-                                        )      
-            # make sure the action predicted is smooth, no need for using plan for executing the action sequence
+            self.robot.control_dofs_position(position = torch.Tensor([0.0]).repeat((len(envs_idx), 1)), dofs_idx_local = self.gripper_idx, envs_idx = envs_idx)
+    
+            # When the action predicted is smooth, no need for using plan for executing the action sequence
             # waypoints = self.robot.plan_path(
             #        qpos_goal = qpos, 
             #        num_waypoints = n_steps
             # )
+
         steps = 0
         for _ in range(n_steps):
             self.scene.step()
@@ -666,55 +691,55 @@ class PushTEnv(gym.Env):
         agent_pos_torch = self.robot.get_links_pos(self.eef_idx, envs_idx)[:, 0, :2]
 
         # Check for NaN values and handle gracefully
-        pose_issues = []
+        # pose_issues = []
 
-        if torch.isnan(cur_Tpose_torch).any():
-            nan_envs = torch.where(torch.isnan(cur_Tpose_torch).any(dim=1))[0]
-            pose_issues.append(f"cur_Tpose NaN in envs: {nan_envs.cpu().numpy()}")
-            # Replace NaN with last known valid pose or default values
-            if hasattr(self, 'poses') and self.poses is not None and 'cur_Tpose' in self.poses:
-                cur_Tpose_torch = torch.where(torch.isnan(cur_Tpose_torch),
-                                            self.poses['cur_Tpose'], cur_Tpose_torch)
-            else:
-                # Fallback to default pose values [x, y, z, roll, pitch, yaw]
-                default_pose = torch.tensor([-0.3, 0.3, 0.06, 0.0, 0.0, 0.0],
-                                          device=cur_Tpose_torch.device, dtype=cur_Tpose_torch.dtype)
-                cur_Tpose_torch = torch.where(torch.isnan(cur_Tpose_torch),
-                                            default_pose.expand_as(cur_Tpose_torch), cur_Tpose_torch)
+        # if torch.isnan(cur_Tpose_torch).any():
+        #     nan_envs = torch.where(torch.isnan(cur_Tpose_torch).any(dim=1))[0]
+        #     pose_issues.append(f"cur_Tpose NaN in envs: {nan_envs.cpu().numpy()}")
+        #     # Replace NaN with last known valid pose or default values
+        #     if hasattr(self, 'poses') and self.poses is not None and 'cur_Tpose' in self.poses:
+        #         cur_Tpose_torch = torch.where(torch.isnan(cur_Tpose_torch),
+        #                                     self.poses['cur_Tpose'], cur_Tpose_torch)
+        #     else:
+        #         # Fallback to default pose values [x, y, z, roll, pitch, yaw]
+        #         default_pose = torch.tensor([-0.3, 0.3, 0.06, 0.0, 0.0, 0.0],
+        #                                   device=cur_Tpose_torch.device, dtype=cur_Tpose_torch.dtype)
+        #         cur_Tpose_torch = torch.where(torch.isnan(cur_Tpose_torch),
+        #                                     default_pose.expand_as(cur_Tpose_torch), cur_Tpose_torch)
 
-        if torch.isnan(target_Tpose_torch).any():
-            nan_envs = torch.where(torch.isnan(target_Tpose_torch).any(dim=1))[0]
-            pose_issues.append(f"target_Tpose NaN in envs: {nan_envs.cpu().numpy()}")
-            # Replace NaN with last known valid pose or default values
-            if hasattr(self, 'poses') and self.poses is not None and 'target_Tpose' in self.poses:
-                target_Tpose_torch = torch.where(torch.isnan(target_Tpose_torch),
-                                                self.poses['target_Tpose'], target_Tpose_torch)
-            else:
-                # Fallback to default target pose
-                default_target = torch.tensor([-0.2, 0.4, 0.0, 0.0, 0.0, 1.57],
-                                            device=target_Tpose_torch.device, dtype=target_Tpose_torch.dtype)
-                target_Tpose_torch = torch.where(torch.isnan(target_Tpose_torch),
-                                                default_target.expand_as(target_Tpose_torch), target_Tpose_torch)
+        # if torch.isnan(target_Tpose_torch).any():
+        #     nan_envs = torch.where(torch.isnan(target_Tpose_torch).any(dim=1))[0]
+        #     pose_issues.append(f"target_Tpose NaN in envs: {nan_envs.cpu().numpy()}")
+        #     # Replace NaN with last known valid pose or default values
+        #     if hasattr(self, 'poses') and self.poses is not None and 'target_Tpose' in self.poses:
+        #         target_Tpose_torch = torch.where(torch.isnan(target_Tpose_torch),
+        #                                         self.poses['target_Tpose'], target_Tpose_torch)
+        #     else:
+        #         # Fallback to default target pose
+        #         default_target = torch.tensor([-0.2, 0.4, 0.0, 0.0, 0.0, 1.57],
+        #                                     device=target_Tpose_torch.device, dtype=target_Tpose_torch.dtype)
+        #         target_Tpose_torch = torch.where(torch.isnan(target_Tpose_torch),
+        #                                         default_target.expand_as(target_Tpose_torch), target_Tpose_torch)
 
-        if torch.isnan(agent_pos_torch).any():
-            nan_envs = torch.where(torch.isnan(agent_pos_torch).any(dim=1))[0]
-            pose_issues.append(f"agent_pos NaN in envs: {nan_envs.cpu().numpy()}")
-            # Replace NaN with last known valid pose or default values
-            if hasattr(self, 'poses') and self.poses is not None and 'agent_pos' in self.poses:
-                agent_pos_torch = torch.where(torch.isnan(agent_pos_torch),
-                                             self.poses['agent_pos'], agent_pos_torch)
-            else:
-                # Fallback to default agent position
-                default_agent_pos = torch.tensor([-0.35, 0.35],
-                                                device=agent_pos_torch.device, dtype=agent_pos_torch.dtype)
-                agent_pos_torch = torch.where(torch.isnan(agent_pos_torch),
-                                             default_agent_pos.expand_as(agent_pos_torch), agent_pos_torch)
+        # if torch.isnan(agent_pos_torch).any():
+        #     nan_envs = torch.where(torch.isnan(agent_pos_torch).any(dim=1))[0]
+        #     pose_issues.append(f"agent_pos NaN in envs: {nan_envs.cpu().numpy()}")
+        #     # Replace NaN with last known valid pose or default values
+        #     if hasattr(self, 'poses') and self.poses is not None and 'agent_pos' in self.poses:
+        #         agent_pos_torch = torch.where(torch.isnan(agent_pos_torch),
+        #                                      self.poses['agent_pos'], agent_pos_torch)
+        #     else:
+        #         # Fallback to default agent position
+        #         default_agent_pos = torch.tensor([-0.35, 0.35],
+        #                                         device=agent_pos_torch.device, dtype=agent_pos_torch.dtype)
+        #         agent_pos_torch = torch.where(torch.isnan(agent_pos_torch),
+        #                                      default_agent_pos.expand_as(agent_pos_torch), agent_pos_torch)
 
-        # Log pose issues for debugging (only print first few to avoid spam)
-        if pose_issues and not hasattr(self, '_pose_issue_logged'):
-            print(f"⚠️  Genesis API pose issues detected: {'; '.join(pose_issues)}")
-            print("   Using fallback values to prevent evaluation crash.")
-            self._pose_issue_logged = True
+        # # Log pose issues for debugging (only print first few to avoid spam)
+        # if pose_issues and not hasattr(self, '_pose_issue_logged'):
+        #     print(f"[!]  Genesis API pose issues detected: {'; '.join(pose_issues)}")
+        #     print("Using fallback values to prevent evaluation crash.")
+        #     self._pose_issue_logged = True
 
         self.poses = {
             'cur_Tpose': cur_Tpose_torch,      # torch tensor in gs.device
@@ -734,10 +759,12 @@ class PushTEnv(gym.Env):
 
         # img (list:[w, h, 3],NoneType,NoneType,NoneType)
         img = self.cam.render(rgb=rgb, depth=depth, segmentation=segmentation, normal=normal)
+        img_attached = self.cam_attached.render(rgb=rgb, depth=depth, segmentation=segmentation, normal=normal) # render the eef attached cam scene 
+
         self.render_cache = img
         idx_np = to_numpy(envs_idx, float=False)  # numpy indices for array indexing
 
-        # # DEBUG: Check camera render output
+        # DEBUG: Check camera render output
         # print(f"[DEBUG PushTEnv] Camera render output type: {type(img)}")
         # if isinstance(img, (list, tuple)) and len(img) > 0 and img[0] is not None:
         #     print(f"[DEBUG PushTEnv] img[0] shape: {img[0].shape}")
@@ -787,19 +814,18 @@ class PushTEnv(gym.Env):
         }
         return info
     
-
 if __name__ == '__main__':
     env = PushTEnv()
-    env.start(n_envs=1, show_camera=False, show_interact_viewer=True, 
+    env.start(n_envs=1, show_camera=True, show_interact_viewer=True, 
               env_separate=False, seed=[0])
     env.seed([0])
     env.reset()
     current_time = time.time()
 
-    env.start_recording()
-    for i in range(50):
+    # env.start_recording()
+    for i in range(5000):
         current_time = time.time()
-        env.step(action=torch.tensor([[-0.5, 0.5, 0.3]]))
+        env.step(action=torch.tensor([[-0.5, 0.5, 0.27]]))
         # env.step()
         finishing_time = time.time()
         executing_time = finishing_time - current_time
@@ -807,6 +833,8 @@ if __name__ == '__main__':
         time_to_wait = 0.1 - executing_time
         if(time_to_wait > 0):
             time.sleep(time_to_wait)
+
+        env.robot.control_dofs_position(position = torch.Tensor([0.0]).repeat((env.n_envs, 1)), dofs_idx_local = env.gripper_idx, envs_idx = None)
         # if i % 10 == 0: 
             # env.reset()
             # print(env.calculate_all_keypoints())
@@ -814,4 +842,4 @@ if __name__ == '__main__':
             # print(env._cal_intersection())
             # print(env.get_key_points())
 
-    env.stop_recording()
+    # env.stop_recording()

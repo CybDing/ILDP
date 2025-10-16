@@ -41,23 +41,35 @@ policy:
   n_obs_steps: ${n_obs_steps}
   obs_steps: ${n_obs_steps}    # For your custom ActionDiffusion model
   enable_crop: true
-  crop_shape: [3, 86, 86]
+  crop_shape: [3, 88, 88]
   
   # Diffusion parameters (standard settings)
   diff_steps: 100              # Number of diffusion steps
   scheduler_mode: 'Cosine'     # Your custom scheduler mode
   # num_inference_steps: 100     # Inference steps
 
-  # Encoding settings (IMPORTANT for performance)
+  # Encoding settings
+  img_encoding_dim: 512      # IMPORTANT: This parameter is IGNORED when using ResNet18!
+                              # - Without spatial_softmax: outputs 512 (from ResNet18's avgpool)
+                              # - With spatial_softmax: outputs 1024 (512 channels × 2 coords)
+                              # Only used for 'custom' backbone to set FC output dimension
+  time_encoding_dim: 128      # Time step encoding dimension
+  pos_encoding_dim: null      # No positional encoding
   encode_agent_pos: false      # Set to false to match reference DP architecture
   vision_backbone: 'resnet18'  # Vision backbone
+  vision_pretrained: false     # Set to false for end-to-end training from scratch
+  use_spatial_softmax: false    # Use spatial softmax pooling (paper recommended, outputs 1024 dims)
+  spatial_softmax_temp: 1.0    # Temperature for spatial softmax (lower=sharper, higher=smoother)
+
+  # Dropout settings for regularization (helps prevent overfitting)
+  vision_encoder_dropout: 0.0  # Dropout rate for vision encoder MLP (0.0=disabled, try 0.1-0.3)
+  pos_encoder_dropout: 0.0     # Dropout rate for position encoder MLP (0.0=disabled, try 0.1-0.3)
+  unet_dropout: 0.0            # Dropout rate for UNet FiLM layers (0.0=disabled, try 0.1-0.3)
+  time_encoder_dropout: 0.0    # Dropout rate for time encoding MLP (0.0=disabled, try 0.1-0.3)
 
   # DDIM settings for inference (training uses DDPM)
   # ddim_steps: 15               # Number of DDIM steps for inference
   # noise_intensity: 0.0         # DDIM noise intensity (0.0=deterministic)
-
-  # Note: Your ActionDiffusionImagePolicy uses custom noise scheduler
-  # The diffusers scheduler is commented out to use your implementation
 
 # === TASK CONFIGURATION ===
 task:
@@ -73,8 +85,8 @@ task:
     pad_before: ${eval:'${n_obs_steps}-1'}     # 1
     pad_after: ${eval:'${n_action_steps}-1'}   # 7  
     seed: 42
-    val_ratio: 0.03
-    max_train_episodes: 128
+    val_ratio: 0.05
+    max_train_episodes: null
   
   # Environment runner (optional for training, but good for evaluation)
   env_runner:
@@ -84,10 +96,10 @@ task:
     max_steps: 600
     n_action_steps: ${n_action_steps}
     n_obs_steps: ${n_obs_steps}
-    n_test: 25
-    n_test_vis: 5
-    n_train: 5  
-    n_train_vis: 1
+    n_test: 60
+    n_test_vis: 8
+    n_train: 10  
+    n_train_vis: 2
     # past_action: ${past_action_visible}
     test_start_seed: 50000
     train_start_seed: 0
@@ -111,9 +123,9 @@ training:
   gradient_accumulate_every: 1
   
   # Checkpointing and evaluation
-  checkpoint_every: 25         # Save checkpoint every 50 epochs
+  checkpoint_every: 50         # Save checkpoint every 50 epochs
   val_every: 5                 # Validate every epoch  
-  rollout_every: 25            # Run environment rollout every 50 epochs
+  rollout_every: 50            # Run environment rollout every 50 epochs
   sample_every: 5              # Sample predictions every 5 epochs
   
   # Limits (null means no limit)
@@ -132,22 +144,24 @@ optimizer:
   lr: 0.0001
   betas: [0.95, 0.999]
   eps: 1.0e-08
-  weight_decay: 1.0e-06
+  weight_decay: 1.0e-05
 
 # === DATA LOADING ===
 dataloader:
   batch_size: ${training.batch_size}
   num_workers: 8
-  persistent_workers: false
-  pin_memory: true
+  persistent_workers: true     # Keep workers alive between epochs for better performance
+  pin_memory: true             # Optimized for CUDA
+  prefetch_factor: 2           # Prefetch batches per worker for better GPU utilization
   shuffle: true
   drop_last: true              # keep batch sizes consistent across epochs for determinism
 
 val_dataloader:
   batch_size: ${training.batch_size}
   num_workers: 8
-  persistent_workers: false
-  pin_memory: true
+  persistent_workers: true     # Keep workers alive between epochs for better performance
+  pin_memory: true             # Optimized for CUDA
+  prefetch_factor: 2           # Prefetch batches per worker for better GPU utilization
   shuffle: false
 
 # === EMA (Exponential Moving Average) CONFIGURATION ===

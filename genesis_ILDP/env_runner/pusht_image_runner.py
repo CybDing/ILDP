@@ -240,11 +240,15 @@ class PushTImageRunner(BaseImageRunner):
                     del obs_dict['envs_idx']
 
                 with torch.no_grad():
-                    if not self.episode_recording:
-                        action_dict = policy.predict_action(obs_dict)
-                        current_diffusion_buffer = None
+                    result = policy.predict_action(obs_dict, recording_diffusion=self.episode_recording)
+
+                    if isinstance(result, dict):
+                        action_dict = result
+                        current_diffusion_buffer = result.get('action_diffusion_buffer', None)
                     else:
-                        action_dict, current_diffusion_buffer = policy.predict_action(obs_dict, recording_diffusion = True)
+                        # Backward compatibility: handle old tuple return format
+                        action_dict = result
+                        current_diffusion_buffer = None
 
                 if isinstance(action_dict, dict):
                     action = action_dict['action']

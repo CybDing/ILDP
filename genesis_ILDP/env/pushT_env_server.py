@@ -19,7 +19,7 @@ from flask import Flask, request, jsonify
 from genesis_ILDP.utils.cuda import *
 from genesis_ILDP.config.env_config import *
 from shapely.geometry import Polygon
-from genesis_ILDP.env.pushT_env_collect import PushTEnv
+from genesis_ILDP.env.pushT_env import PushTEnv
 global reset_requested
 class PushTEnvServer(PushTEnv):
     def __init__(self, render_size=(96, 96), xlim=0.1, ylim=0.1, seed=None, 
@@ -208,7 +208,7 @@ if __name__ == '__main__':
     print("Flask server should be running now")
     
     env = PushTEnvServer(show_fps=False)
-    env.start(n_envs=1, show_camera=False, show_interact_viewer=False, env_separate=False, seed=[0])
+    env.start(n_envs=1, show_camera=True, show_interact_viewer=True, env_separate=False, seed=[0])
     env.seed(np.arange(1))
     env.reset()
     action_count = 0
