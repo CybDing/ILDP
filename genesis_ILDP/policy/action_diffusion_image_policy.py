@@ -11,15 +11,8 @@ from genesis_ILDP.model.encoding import global_img_encoding, time_encoding, pos_
 from genesis_ILDP.policy.base_image_policy import BaseImagePolicy
 from genesis_ILDP.utils.cuda import to_torch
 from genesis_ILDP.dataset.pusht_image_dataset import PushTImageDataset
-# Import from diffusion_policy for standard components
 from diffusion_policy.model.common.normalizer import LinearNormalizer
 from diffusion_policy.model.vision.crop_randomizer import CropRandomizer
-
-# Encoding dimensions
-# dim_time_ebd = 128
-# dim_imgs_ebd = 1024  # per observation step
-# dim_agentPos_ebd = 512  # per observation step
-
 
 class ActionDiffusionImagePolicy(BaseImagePolicy):
        
@@ -223,22 +216,15 @@ class ActionDiffusionImagePolicy(BaseImagePolicy):
         if not self.enable_crop or self.cropper is None:
             return images
 
-        # Debug: Print input shape
-        # print(f"_apply_crop: Input images shape: {images.shape}, training: {training}")
-
-        # Ensure cropper is on the same device as images
         if hasattr(self.cropper, 'to'):
             self.cropper = self.cropper.to(images.device)
 
         if training:
-            self.cropper.train()  # Random cropping
+            self.cropper.train()  
         else:
-            self.cropper.eval()   # Center cropping
+            self.cropper.eval()  
 
         cropped_images = self.cropper(images)
-
-        # Debug: Print output shape
-        # print(f"_apply_crop: Output images shape: {cropped_images.shape}")
 
         return cropped_images
 
@@ -251,10 +237,6 @@ class ActionDiffusionImagePolicy(BaseImagePolicy):
         imgs = obs_dict['image']
         agent_pos = obs_dict['agent_pos']
 
-        # # Debug print to understand input shapes during rollout
-        # print(f"predict_action input shapes - imgs: {imgs.shape}, agent_pos: {agent_pos.shape}")
-        # print(f"imgs.ndim: {imgs.ndim}, expected 5D, last dim: {imgs.shape[-1] if imgs.ndim > 0 else 'N/A'}")
-
         if len(imgs.shape) == 5 and imgs.shape[-1] == 3:
             print(f"Converting image dimensions from {imgs.shape} to channels-first format")
             imgs = imgs.permute(0, 1, 4, 2, 3)  # [B, T, H, W, C] -> [B, T, C, H, W]
@@ -266,11 +248,13 @@ class ActionDiffusionImagePolicy(BaseImagePolicy):
         else:
             print(f"WARNING: Unexpected image tensor shape: {imgs.shape} (expected 5D)")
 
-        # 2) Trim to expected observation steps
         if imgs.shape[1] > self.n_obs_steps:
             imgs = imgs[:, :self.n_obs_steps]
+            print('[action_diffusion_policy] Warning: Input to policy for predicting action shape does not match with n_obs_steps')
         if agent_pos.shape[1] > self.n_obs_steps:
             agent_pos = agent_pos[:, :self.n_obs_steps]
+        elif imgs.shape[1] < self.n_obs_steps or imgs.shape[1] < self.n_obs_steps:
+            raise ValueError("[action diffusion policy] Error! Input shape obs steps smaller than set n_obs_steps, could not predict actions")
 
         # 3) Normalize on the current device
         device = next(self.parameters()).device
@@ -317,12 +301,10 @@ class ActionDiffusionImagePolicy(BaseImagePolicy):
         return result_dict
 
     def set_normalizer(self, normalizer: LinearNormalizer):
-        """Set the data normalizer."""
         self.normalizer.load_state_dict(normalizer.state_dict())
         # Ensure buffers are on the same device as the policy
         self.normalizer.to(next(self.parameters()).device)
 
-        # Check that required keys exist in the normalizer
         if hasattr(self.normalizer, 'params_dict') and len(self.normalizer.params_dict) > 0:
             assert 'image' in self.normalizer.params_dict, "Normalizer missing 'image' key"
             assert 'agent_pos' in self.normalizer.params_dict, "Normalizer missing 'agent_pos' key"
@@ -427,12 +409,6 @@ class ActionDiffusionImagePolicy(BaseImagePolicy):
 
         imgs_features = imgs_features_batched.reshape(batch_size, self.n_obs_steps * self.img_encoding_dim)
 
-        # if self.encode_agent_pos:
-        #     pos_features = pos_features_batched.reshape(batch_size, self.n_obs_steps * self.pos_encoding_dim)
-        # else:
-            # Raw agent_pos is already (batch_size * n_obs_steps, 2)
-            
-        # if not encode the agent_pos, the encoding dim is written 2 so that the results could be consistenet without or with encoding
         pos_features = pos_features_batched.reshape(batch_size, self.n_obs_steps * self.pos_encoding_dim)
 
         # Initialize with random noise
@@ -447,18 +423,10 @@ class ActionDiffusionImagePolicy(BaseImagePolicy):
         if recording_diffusion:
             action_buffer = [predicted_trajs] # which will hold for (B, horizons, Da)           
 
-        # Reverse diffusion process from diff_steps down to 1 (timesteps)
-
         for step_idx, t in enumerate(reversed(range(1, self.diff_steps + 1))):
             # Time encoding
             t_features = torch.stack([self.time_encoding_net(t).to(device=imgs.device)
                                     for _ in range(batch_size)], dim=0)
-
-            # # DEBUG: Print dimensions for debugging
-            # print(f"[DEBUG DDPM] imgs_features.shape: {imgs_features.shape}")
-            # print(f"[DEBUG DDPM] pos_features.shape: {pos_features.shape}")
-            # print(f"[DEBUG DDPM] t_features.shape: {t_features.shape}")
-            # print(f"[DEBUG DDPM] Expected total: {imgs_features.shape[1] + pos_features.shape[1] + t_features.shape[1]}")
 
             global_features_t = self.merge_multimodal_encoding(imgs_features, pos_features, t_features)
             # print(f"[DEBUG DDPM] global_features_t.shape: {global_features_t.shape}")
@@ -490,9 +458,8 @@ class ActionDiffusionImagePolicy(BaseImagePolicy):
             if recording_diffusion:
                 action_buffer.append(predicted_trajs)  # append the predicted_trajs
 
-            # DEBUG: Final check after update
             if torch.isnan(predicted_trajs).any():
-                print(f"  ❌ NaN detected in predicted_trajs after DDPM step {step_idx}!")
+                print(f"  NaN detected in predicted_trajs after DDPM step {step_idx}!")
                 print(f"  Breaking early to prevent propagation...")
                 break        
         
@@ -593,22 +560,18 @@ class ActionDiffusionImagePolicy(BaseImagePolicy):
                 print(f"  predicted_trajs range: [{predicted_trajs.min().item():.3f}, {predicted_trajs.max().item():.3f}]")
                 print(f"  predicted_noise_t range: [{predicted_noise_t.min().item():.3f}, {predicted_noise_t.max().item():.3f}]")
 
-            # Predicted x0
             sqrt_alpha_cumprod_t = torch.sqrt(alpha_cumprod_t)
             sqrt_one_minus_alpha_cumprod_t = torch.sqrt(1 - alpha_cumprod_t)
             pred_x0 = (predicted_trajs - sqrt_one_minus_alpha_cumprod_t * predicted_noise_t) / sqrt_alpha_cumprod_t
 
-            # DEBUG: Check pred_x0 for NaN
             if torch.isnan(pred_x0).any() or step_idx < 5 or i < 10:
                 print(f"  pred_x0 has NaN: {torch.isnan(pred_x0).any()}")
                 print(f"  pred_x0 range: [{pred_x0.min().item():.3f}, {pred_x0.max().item():.3f}]")
 
-            # Direction towards x_t
             if i > 1:  # Not the final step (timestep 1)
                 ratio_term = (1 - alpha_cumprod_t) * (alpha_cumprod_prev / alpha_cumprod_t)
                 sqrt_term = 1 - alpha_cumprod_prev - ratio_term
 
-                # DEBUG: Check for negative sqrt
                 if sqrt_term < 0:
                     print(f"  WARNING: sqrt_term is negative: {sqrt_term.item():.8e}")
 
@@ -621,7 +584,6 @@ class ActionDiffusionImagePolicy(BaseImagePolicy):
                 # Final step: timestep 1 -> 0, deterministic
                 predicted_trajs = pred_x0
 
-            # DEBUG: Final check after update
             if torch.isnan(predicted_trajs).any():
                 print(f"  ❌ NaN detected in predicted_trajs after step {step_idx}!")
                 print(f"  Breaking early to prevent propagation...")

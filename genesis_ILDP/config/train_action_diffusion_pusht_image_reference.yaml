@@ -1,0 +1,198 @@
+# === TRAINING CONFIGURATION FOR REFERENCE DIFFUSION POLICY ===
+# Uses the ORIGINAL DiffusionUnetImagePolicy from diffusion_policy library
+# Purpose: Test if reference implementation performs better on Genesis environment
+# ALL PARAMETERS MATCH OFFICIAL DIFFUSION_POLICY EXACTLY
+
+_target_: genesis_ILDP.workspace.train_action_diffusion_image_workspace.TrainActionDiffusionImageWorkspace
+
+# === EXPERIMENT SETTINGS ===
+exp_name: "action_diffusion_pusht_image_REFERENCE"
+task_name: pusht_image_reference
+name: train_action_diffusion_image_reference
+
+# === STANDARD DIFFUSION PARAMETERS (EXACT match to diffusion_policy) ===
+horizon: 16                    # Predict 16 action steps
+n_action_steps: 8             # Execute first 8 actions
+n_obs_steps: 2                # Use 2 observation frames
+n_latency_steps: 0            # No latency compensation
+dataset_obs_steps: 2          # Dataset observation steps
+obs_as_global_cond: true      # Use observations as global conditioning
+past_action_visible: false    # Don't show past actions
+keypoint_visible_rate: 1.0    # Not used for image policy
+
+# === SHAPE METADATA ===
+shape_meta:
+  action:
+    shape: [2]                 # 2D action space (x, y coordinates)
+  obs:
+    image:
+      shape: [3, 96, 96]       # RGB images 96x96
+      type: rgb                # IMPORTANT: Must be 'rgb' for MultiImageObsEncoder
+    agent_pos:
+      shape: [2]               # 2D agent position
+      type: low_dim
+
+# === REFERENCE POLICY CONFIGURATION (EXACT match to diffusion_policy) ===
+policy:
+  _target_: genesis_ILDP.policy.action_diffusion_image_policy_reference.ActionDiffusionImagePolicyReference
+
+  # Shape and basic parameters
+  shape_meta: ${shape_meta}
+  horizon: ${horizon}
+  n_action_steps: ${n_action_steps}
+  n_obs_steps: ${n_obs_steps}
+  num_inference_steps: 100     # Number of inference steps
+
+  # Scheduler settings (EXACT match to diffusion_policy)
+  diff_steps: 100              # Training diffusion steps
+  beta_schedule: 'squaredcos_cap_v2'  # Cosine schedule with squared cap
+  beta_start: 0.0001
+  beta_end: 0.02
+  prediction_type: 'epsilon'   # Predict noise ('epsilon') or clean sample ('sample')
+  clip_sample: true            # Clip sample values to [-1, 1]
+  variance_type: 'fixed_small' # CRITICAL: fixed_small variance (not fixed_small_log to avoid NaN)
+
+  # Vision encoder settings (EXACT match to diffusion_policy)
+  vision_backbone: 'resnet18'  # Vision backbone architecture
+  vision_pretrained: false     # No pretrained weights (train end-to-end)
+  use_group_norm: true         # Replace BatchNorm with GroupNorm (REQUIRED for EMA stability)
+  share_rgb_model: false       # Each camera has its own encoder
+  imagenet_norm: true          # CRITICAL: Use ImageNet normalization (mean=[0.485,0.456,0.406], std=[0.229,0.224,0.225])
+  resize_shape: null           # No resize, keep 96x96 input
+  crop_shape: [76, 76]         # Random crop to 76x76 (EXACT match to official config)
+  random_crop: true            # Use random crop for data augmentation
+
+  # UNet settings (EXACT match to diffusion_policy)
+  diffusion_step_embed_dim: 128  # Time embedding dimension (128, NOT 256!)
+  down_dims: [512, 1024, 2048]   # UNet channel dimensions - MUCH LARGER [512,1024,2048]
+  kernel_size: 5                 # Convolution kernel size
+  n_groups: 8                    # Number of groups for GroupNorm
+  cond_predict_scale: true       # Use FiLM conditioning with scale+bias (not just bias)
+  obs_as_global_cond: ${obs_as_global_cond}  # Use observations as global conditioning
+
+# === TASK CONFIGURATION ===
+task:
+  name: pusht_image
+  shape_meta: ${shape_meta}
+
+  # Dataset configuration (EXACT match to diffusion_policy)
+  dataset:
+    _target_: genesis_ILDP.dataset.pusht_image_dataset.PushTImageDataset
+    zarr_path: genesis_ILDP/data/train_data/merged_data_0925.zarr
+    horizon: ${horizon}
+    pad_before: ${eval:'${n_obs_steps}-1'}     # 1
+    pad_after: ${eval:'${n_action_steps}-1'}   # 7
+    seed: 42
+    val_ratio: 0.02              # 2% validation (NOT 5%!) - EXACT match to official
+    max_train_episodes: null     # Use full dataset (official uses 90 for standard PushT)
+
+  # Environment runner (EXACT match to diffusion_policy)
+  env_runner:
+    _target_: genesis_ILDP.env_runner.pusht_image_runner.PushTImageRunner
+    output_dir: ${multi_run.run_dir}
+    fps: 10                      # 10 FPS (NOT 30!) - EXACT match to official
+    max_steps: 300               # 300 steps (NOT 600!) - EXACT match to official
+    n_action_steps: ${n_action_steps}
+    n_obs_steps: ${n_obs_steps}
+    n_test: 50                   # 50 test episodes - EXACT match to official
+    n_test_vis: 4                # 4 test visualizations - EXACT match to official
+    n_train: 6                   # 6 train episodes - EXACT match to official
+    n_train_vis: 2               # 2 train visualizations - EXACT match to official
+    test_start_seed: 100000      # Test seed 100000 - EXACT match to official
+    train_start_seed: 0
+    n_envs: null
+    enable_past_action: false
+    enable_render: true
+    done_ratio: 0.7
+
+# === TRAINING CONFIGURATION (EXACT match to diffusion_policy) ===
+training:
+  seed: 42
+  device: cuda:1
+  num_epochs: 500            # LONG training (3050-8000 epochs in official configs)
+  batch_size: 64              # Batch size 64 (NOT 128!) - EXACT match to official
+  deterministic: true         # Enable deterministic algorithms for reproducibility
+  worker_seed_strategy: offset
+
+  # Learning and optimization (EXACT match)
+  lr_scheduler: cosine        # Cosine learning rate schedule
+  lr_warmup_steps: 500        # 500 warmup steps
+  gradient_accumulate_every: 1
+
+  # Checkpointing and evaluation (EXACT match)
+  checkpoint_every: 50        # Save checkpoint every 50 epochs
+  val_every: 1                # Validate EVERY epoch (NOT every 5!) - EXACT match
+  rollout_every: 50           # Run environment rollout every 50 epochs
+  sample_every: 5             # Sample predictions every 5 epochs
+
+  # Limits
+  max_train_steps: null
+  max_val_steps: null
+
+  # Debugging and logging
+  debug: false
+  tqdm_interval_sec: 1.0
+  use_ema: true               # CRITICAL: Use EMA with GroupNorm (not BatchNorm)
+  resume: true                # Enable resume - EXACT match to official
+
+# === OPTIMIZER CONFIGURATION (EXACT match to diffusion_policy) ===
+optimizer:
+  _target_: torch.optim.AdamW
+  lr: 1.0e-4                  # 0.0001
+  betas: [0.95, 0.999]
+  eps: 1.0e-08
+  weight_decay: 1.0e-06       # Standard weight decay
+
+# === DATA LOADING (EXACT match to diffusion_policy) ===
+dataloader:
+  batch_size: ${training.batch_size}
+  num_workers: 4              # 4 workers (NOT 8!) - EXACT match to official
+  persistent_workers: false   # False (NOT true!) - EXACT match to official
+  pin_memory: true
+  shuffle: true
+
+val_dataloader:
+  batch_size: ${training.batch_size}
+  num_workers: 4              # 4 workers (NOT 8!) - EXACT match to official
+  persistent_workers: false   # False (NOT true!) - EXACT match to official
+  pin_memory: true
+  shuffle: false
+
+# === EMA CONFIGURATION (EXACT match to diffusion_policy) ===
+ema:
+  _target_: genesis_ILDP.model.common.ema_model.EMAModel
+  inv_gamma: 1.0
+  max_value: 0.9999
+  min_value: 0.0
+  power: 0.75
+  update_after_step: 0
+
+# === CHECKPOINT CONFIGURATION ===
+checkpoint:
+  save_last_ckpt: true
+  save_last_snapshot: false
+  topk:
+    format_str: epoch={epoch:04d}-test_mean_score={test_mean_score:.3f}.ckpt
+    k: 5
+    mode: max
+    monitor_key: test_mean_score
+
+# === LOGGING CONFIGURATION ===
+logging:
+  mode: online
+  project: genesis_ILDP_action_diffusion
+  group: action_diffusion_pusht_reference
+  name: ${exp_name}_${now:%Y.%m.%d-%H.%M.%S}
+  tags:
+    - action_diffusion_image
+    - pusht_image
+    - reference_implementation
+    - official_hyperparams
+    - genesis
+  id: null
+  resume: true                # EXACT match to official
+
+# === OUTPUT CONFIGURATION ===
+multi_run:
+  run_dir: outputs/${now:%Y.%m.%d}/${now:%H.%M.%S}_${exp_name}
+  wandb_name_base: ${now:%Y.%m.%d}-${now:%H.%M.%S}_${exp_name}
