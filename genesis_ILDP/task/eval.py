@@ -1,17 +1,16 @@
 """
+Basic evaluation:
+    python eval.py checkpoint_path=/path/to/checkpoint.ckpt
 
-legacy version model eval
+With custom eval config:
+    python eval.py checkpoint_path=/path/to/checkpoint.ckpt eval=custom_eval
 
-python eval.py --checkpoint ./data/checkpoints.ckpt -o ../data/pusht_eval_output -d mps:0
+Override specific parameters:
+    python eval.py checkpoint_path=/path/to/checkpoint.ckpt \
+        eval.device=cuda:1 \
+        eval.env_runner.n_test=50 \
+        eval.env_runner.max_steps=500
 
-Example with custom runner parameters:
-python eval.py --checkpoint ./data/checkpoints.ckpt -o ../data/pusht_eval_output -d mps:0 \
-    --n_test 20 --n_test_vis 5 --n_train 10 --n_train_vis 3 \
-    --test_start_seed 50000 --train_start_seed 1000 --max_steps 300 --fps 60 --enable_render
-
-Quick test with good video speed:
-python eval.py --checkpoint ./data/checkpoints.ckpt -o ../data/pusht_eval_output -d mps:0 \
-    --n_test 1 --n_test_vis 1 --max_steps 200 --fps 30
 """
 
 import sys
@@ -21,92 +20,102 @@ sys.stderr = open(sys.stderr.fileno(), mode='w', buffering=1)
 
 import os
 import pathlib
-import click
 import hydra
 import torch
 import dill
 import wandb
 import json
 import numpy as np
+from omegaconf import OmegaConf, DictConfig
 from genesis_ILDP.workspace.base_workspace import BaseWorkspace
 
-@click.command()
-@click.option('-c', '--checkpoint', required=True)
-@click.option('-o', '--output_dir', required=True)
-@click.option('-d', '--device', default='cuda:0')
-@click.option('--n_test', default=None, type=int, help='Number of test episodes (overrides config)')
-@click.option('--n_test_vis', default=None, type=int, help='Number of test episodes with visualization (overrides config)')
-@click.option('--n_train', default=0, type=int, help='Number of train episodes (overrides config)')
-@click.option('--n_train_vis', default=0, type=int, help='Number of train episodes with visualization (overrides config)')
-@click.option('--test_start_seed', default=50023, type=int, help='Starting seed for test episodes (overrides config)')
-@click.option('--train_start_seed', default=0, type=int, help='Starting seed for train episodes (overrides config)')
-@click.option('--max_steps', default=600, type=int, help='Maximum steps per episode (overrides config)')
-@click.option('--fps', default=30, type=int, help='Video FPS for rendering (overrides config)')
-@click.option('--enable_render/--no_render', default=None, help='Enable/disable rendering (overrides config)')
-def main(checkpoint, output_dir, device, n_test, n_test_vis, n_train, n_train_vis, test_start_seed, train_start_seed, max_steps, fps, enable_render):
-    if os.path.exists(output_dir):
+OmegaConf.register_new_resolver("eval", eval, replace=True)
+
+@hydra.main(
+    version_base=None,
+    config_path="../config/eval",
+    config_name="eval_checkpoint"
+)
+# could use -cn for overriding the config name
+def main(eval_cfg: DictConfig) -> None:
+    # Override Hydra's working directory to stay in original dir
+    os.chdir(hydra.utils.get_original_cwd())
+    """
+    Main evaluation function using Hydra configuration.
+
+    Args:
+        eval_cfg: Hydra configuration from config/eval/default.yaml
+    """
+    # Extract checkpoint path
+    checkpoint_path = eval_cfg.checkpoint_path
+    if not os.path.exists(checkpoint_path):
+        raise FileNotFoundError(f"Checkpoint not found: {checkpoint_path}")
+
+    # Setup output directory
+    output_dir = eval_cfg.output_dir
+    if output_dir is None:
+        # Use Hydra's automatic output dir
+        from hydra.core.hydra_config import HydraConfig
+        output_dir = HydraConfig.get().runtime.output_dir
+
+    if os.path.exists(output_dir) and eval_cfg.get('confirm_overwrite', False):
+        import click
         click.confirm(f"Output path {output_dir} already exists! Overwrite?", abort=True)
+
     pathlib.Path(output_dir).mkdir(parents=True, exist_ok=True)
-    
-    # load checkpoint with device mapping for cross-platform compatibility
-    target_device = torch.device(device)
-    payload = torch.load(open(checkpoint, 'rb'), pickle_module=dill, map_location=target_device)
-    cfg = payload['cfg']
-    cls = hydra.utils.get_class(cfg._target_)
-    workspace = cls(cfg, output_dir=output_dir)
+    print(f"Output directory: {output_dir}")
+
+    # Load checkpoint with device mapping
+    target_device = torch.device(eval_cfg.device)
+    print(f"Loading checkpoint from: {checkpoint_path}")
+    print(f"Target device: {target_device}")
+
+    payload = torch.load(open(checkpoint_path, 'rb'), pickle_module=dill, map_location=target_device)
+    checkpoint_cfg = payload['cfg']
+
+    # Merge checkpoint config with eval overrides
+    # Priority: eval_cfg.overrides > checkpoint_cfg
+    if 'overrides' in eval_cfg and eval_cfg.overrides is not None:
+        print("\n=== Applying config overrides ===")
+
+        OmegaConf.set_struct(checkpoint_cfg, False) # enable hydra adding new keys from override
+        checkpoint_cfg = OmegaConf.merge(checkpoint_cfg, eval_cfg.overrides)
+        OmegaConf.set_struct(checkpoint_cfg, True)
+
+        print(OmegaConf.to_yaml(eval_cfg.overrides))
+
+    # Initialize workspace
+    cls = hydra.utils.get_class(checkpoint_cfg._target_)
+    workspace = cls(checkpoint_cfg, output_dir=output_dir)
     workspace: BaseWorkspace
     workspace.load_payload(payload, exclude_keys=None, include_keys=None)
-    
-    # get policy from workspace
+
+    # Get policy from workspace
     policy = workspace.model
-    if cfg.training.use_ema:
+    if eval_cfg.use_ema and hasattr(workspace, 'ema_model'):
+        print("Using EMA model")
         policy = workspace.ema_model
-    
-    # Device is already set as target_device above
+
     policy.to(target_device)
     policy.eval()
 
-    # Configure env_runner parameters (override config with command line args if provided)
-    runner_params = {}
-    if n_test is not None:
-        runner_params['n_test'] = n_test
-        print(f"Overriding n_test: {n_test}")
-    if n_test_vis is not None:
-        runner_params['n_test_vis'] = n_test_vis
-        print(f"Overriding n_test_vis: {n_test_vis}")
-    if n_train is not None:
-        runner_params['n_train'] = n_train
-        print(f"Overriding n_train: {n_train}")
-    if n_train_vis is not None:
-        runner_params['n_train_vis'] = n_train_vis
-        print(f"Overriding n_train_vis: {n_train_vis}")
-    if test_start_seed is not None:
-        runner_params['test_start_seed'] = test_start_seed
-        print(f"Overriding test_start_seed: {test_start_seed}")
-    if train_start_seed is not None:
-        runner_params['train_start_seed'] = train_start_seed
-        print(f"Overriding train_start_seed: {train_start_seed}")
-    if max_steps is not None:
-        runner_params['max_steps'] = max_steps
-        print(f"Overriding max_steps: {max_steps}")
-    if fps is not None:
-        runner_params['fps'] = fps
-        print(f"Overriding fps: {fps}")
-    if enable_render is not None:
-        runner_params['enable_render'] = enable_render
-        print(f"Overriding enable_render: {enable_render}")
+    if 'env_runner' in eval_cfg and eval_cfg.env_runner is not None:
+        print("\n=== Using custom env_runner from eval config ===")
+        runner_config = eval_cfg.env_runner
+    else:
+        print("\n=== Using env_runner from checkpoint config ===")
+        runner_config = checkpoint_cfg.task.env_runner
 
-    # Always override output_dir
-    runner_params['output_dir'] = output_dir
+    runner_config = OmegaConf.merge(runner_config, {'output_dir': output_dir})
 
-    # run eval
-    env_runner = hydra.utils.instantiate(
-        cfg.task.env_runner,
-        **runner_params)
-    
+
+    print("\n=== Env Runner Configuration ===")
+    print(OmegaConf.to_yaml(runner_config))
+
+    env_runner = hydra.utils.instantiate(runner_config)
+    print("\n=== Starting evaluation ===")
     runner_log = env_runner.run(policy)
 
-    # Convert runner_log to JSON-serializable format
     json_log = dict()
     for key, value in runner_log.items():
         if isinstance(value, wandb.sdk.data_types.video.Video):
@@ -118,10 +127,16 @@ def main(checkpoint, output_dir, device, n_test, n_test_vis, n_train, n_train_vi
         else:
             json_log[key] = value
 
-    # Save results to JSON
     out_path = os.path.join(output_dir, 'eval_log.json')
     json.dump(json_log, open(out_path, 'w'), indent=2, sort_keys=True)
+
+    print(f"\n=== Evaluation completed ===")
     print(f"Results saved to: {out_path}")
+    print(f"\nKey metrics:")
+    for key, value in json_log.items():
+        if 'mean_score' in key or 'success_rate' in key:
+            print(f"  {key}: {value}")
+
 
 if __name__ == '__main__':
     main()
