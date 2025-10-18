@@ -14,6 +14,7 @@ import genesis as gs
 import glfw
 import requests
 import json
+from copy import deepcopy
 
 from genesis_ILDP.utils.cuda import *
 from genesis_ILDP.config.env_config import *
@@ -34,7 +35,7 @@ class PushTEnv(gym.Env):
                  device = None,
                  done_ratio = 0.85,
                  spawn_center=(-0.3, 0.3),  # Center of spawn region (x, y)
-                 spawn_range_scale=0.6     # Scale factor for spawn range (1.0 = use xlim/ylim)
+                 spawn_range_scale=0.6,      # Scale factor for spawn range (1.0 = use xlim/ylim)
                  ):
 
         self.render_size = render_size
@@ -54,6 +55,7 @@ class PushTEnv(gym.Env):
         self.done_ratio = done_ratio
         self.spawn_center = spawn_center
         self.spawn_range_scale = spawn_range_scale
+        self.home_pos = None
 
         self.ini_delta_dis: Union[float, np.ndarray] = 0.0
         self.ini_delta_ang: Union[float, np.ndarray] = 0.0 
@@ -199,8 +201,10 @@ class PushTEnv(gym.Env):
         self.tcp_idx = self.tcp.idx_local
 
         # link's idx_local respect to its parent object
+        # self.marker_dofs = self.plane.get_joint('marker_joint')
         self.marker_idx = self.plane.get_link('marker').idx_local
-        self.marker_dofs_idx = self.plane.get_joint('marker_joint').dof_idx_local
+        # self.marker_joint
+        self.marker_center_dof_idx = self.plane.get_joint('marker_joint').dof_idx_local
         self.Tcube_idx = self.cube.get_link('center').idx_local
 
         offset_T = torch.Tensor(
@@ -366,6 +370,7 @@ class PushTEnv(gym.Env):
         #                             envs_idx = envs_idx)[:, 0:7]
 
         home_pos_down = torch.tensor([-0.4602,  1.3013,  2.5882,  1.1296,  0.7087,  0.6787,  1.2742], device=gs.device).repeat(len(envs_idx), 1)
+        self.home_pos = home_pos_down
         # home_pos_down = torch.tensor([-0.3794,  1.3189,  2.6545,  1.5788,  1.0798,  1.0309,  0.8671]).repeat(self.n_envs, 1)
 
         # home_pos_down = torch.Tensor([[ 2.5060, -1.5572, -0.5973,  2.4180,  2.3973,  0.5915, -0.9210]]).repeat(self.n_envs, 1)
@@ -391,7 +396,7 @@ class PushTEnv(gym.Env):
         
         self.plane.set_dofs_position(
             target_state_torch,
-            dofs_idx_local=self.marker_dofs_idx,
+            dofs_idx_local=self.marker_center_dof_idx,
             envs_idx=envs_idx
         )
         self.robot.control_dofs_position(
@@ -504,8 +509,8 @@ class PushTEnv(gym.Env):
         # dis_ori = R_z * R_y * R_x * dis_direct
 
         if self.poses is None: 
-            default_envs = torch.arange(self.n_envs, device=gs.device, dtype=torch.int32)
-            self._get_poses(default_envs)
+            all_envs = torch.arange(self.n_envs, device=gs.device, dtype=torch.int32)
+            self._get_poses(all_envs)
         
         cur_rot_ang_z = self.poses['cur_Tpose'][:, 5]
         tar_rot_ang_z = self.poses['target_Tpose'][:, 5]
@@ -593,8 +598,8 @@ class PushTEnv(gym.Env):
         - Large positive (>10): Task completion
         """
         if self.poses is None:
-            default_envs = torch.arange(self.n_envs, device=gs.device, dtype=torch.int32)
-            self._get_poses(default_envs)
+            all_envs = torch.arange(self.n_envs, device=gs.device, dtype=torch.int32)
+            self._get_poses(all_envs)
 
         cur_pos = self.poses['cur_Tpose']
         tar_pos = self.poses['target_Tpose']
@@ -679,73 +684,27 @@ class PushTEnv(gym.Env):
             except Exception as e:
                 raise ValueError(f"Env {i}: Polygon error - {e}")
                 
-        # print(ratio)
         return ratio
 
-    def _get_poses(self, envs_idx: torch.Tensor) -> None:
+    def _get_poses(self, envs_idx: torch.Tensor, global_write=True, ret=False) -> None:
         """Get poses from Genesis API with robust NaN detection and fallback."""
 
-        # Get poses from Genesis API
+        assert envs_idx is not None
+
+        # sometimes when the dofs initial pos 0 is not aligned with the urdf file the cooridate 0 which has a small bias, the value here using the dofs is not accurate 
         cur_Tpose_torch = self.cube.get_dofs_position(self.cube_dofs_idx, envs_idx)
-        target_Tpose_torch = self.plane.get_dofs_position(self.marker_dofs_idx, envs_idx)
+        target_Tpose_torch = self.plane.get_dofs_position(self.marker_center_dof_idx, envs_idx)
         agent_pos_torch = self.robot.get_links_pos(self.eef_idx, envs_idx)[:, 0, :2]
 
-        # Check for NaN values and handle gracefully
-        # pose_issues = []
-
-        # if torch.isnan(cur_Tpose_torch).any():
-        #     nan_envs = torch.where(torch.isnan(cur_Tpose_torch).any(dim=1))[0]
-        #     pose_issues.append(f"cur_Tpose NaN in envs: {nan_envs.cpu().numpy()}")
-        #     # Replace NaN with last known valid pose or default values
-        #     if hasattr(self, 'poses') and self.poses is not None and 'cur_Tpose' in self.poses:
-        #         cur_Tpose_torch = torch.where(torch.isnan(cur_Tpose_torch),
-        #                                     self.poses['cur_Tpose'], cur_Tpose_torch)
-        #     else:
-        #         # Fallback to default pose values [x, y, z, roll, pitch, yaw]
-        #         default_pose = torch.tensor([-0.3, 0.3, 0.06, 0.0, 0.0, 0.0],
-        #                                   device=cur_Tpose_torch.device, dtype=cur_Tpose_torch.dtype)
-        #         cur_Tpose_torch = torch.where(torch.isnan(cur_Tpose_torch),
-        #                                     default_pose.expand_as(cur_Tpose_torch), cur_Tpose_torch)
-
-        # if torch.isnan(target_Tpose_torch).any():
-        #     nan_envs = torch.where(torch.isnan(target_Tpose_torch).any(dim=1))[0]
-        #     pose_issues.append(f"target_Tpose NaN in envs: {nan_envs.cpu().numpy()}")
-        #     # Replace NaN with last known valid pose or default values
-        #     if hasattr(self, 'poses') and self.poses is not None and 'target_Tpose' in self.poses:
-        #         target_Tpose_torch = torch.where(torch.isnan(target_Tpose_torch),
-        #                                         self.poses['target_Tpose'], target_Tpose_torch)
-        #     else:
-        #         # Fallback to default target pose
-        #         default_target = torch.tensor([-0.2, 0.4, 0.0, 0.0, 0.0, 1.57],
-        #                                     device=target_Tpose_torch.device, dtype=target_Tpose_torch.dtype)
-        #         target_Tpose_torch = torch.where(torch.isnan(target_Tpose_torch),
-        #                                         default_target.expand_as(target_Tpose_torch), target_Tpose_torch)
-
-        # if torch.isnan(agent_pos_torch).any():
-        #     nan_envs = torch.where(torch.isnan(agent_pos_torch).any(dim=1))[0]
-        #     pose_issues.append(f"agent_pos NaN in envs: {nan_envs.cpu().numpy()}")
-        #     # Replace NaN with last known valid pose or default values
-        #     if hasattr(self, 'poses') and self.poses is not None and 'agent_pos' in self.poses:
-        #         agent_pos_torch = torch.where(torch.isnan(agent_pos_torch),
-        #                                      self.poses['agent_pos'], agent_pos_torch)
-        #     else:
-        #         # Fallback to default agent position
-        #         default_agent_pos = torch.tensor([-0.35, 0.35],
-        #                                         device=agent_pos_torch.device, dtype=agent_pos_torch.dtype)
-        #         agent_pos_torch = torch.where(torch.isnan(agent_pos_torch),
-        #                                      default_agent_pos.expand_as(agent_pos_torch), agent_pos_torch)
-
-        # # Log pose issues for debugging (only print first few to avoid spam)
-        # if pose_issues and not hasattr(self, '_pose_issue_logged'):
-        #     print(f"[!]  Genesis API pose issues detected: {'; '.join(pose_issues)}")
-        #     print("Using fallback values to prevent evaluation crash.")
-        #     self._pose_issue_logged = True
-
-        self.poses = {
+        if global_write:
+            self.poses = {
             'cur_Tpose': cur_Tpose_torch,      # torch tensor in gs.device
             'target_Tpose': target_Tpose_torch, # torch tensor in gs.device
             'agent_pos': agent_pos_torch        # torch tensor in gs.device
-        }
+            }
+        
+        if ret: 
+            return self.poses
 
 
     def _get_obs(self, rgb: bool = True, depth: bool = False, 
@@ -764,54 +723,40 @@ class PushTEnv(gym.Env):
         self.render_cache = img
         idx_np = to_numpy(envs_idx, float=False)  # numpy indices for array indexing
 
-        # DEBUG: Check camera render output
-        # print(f"[DEBUG PushTEnv] Camera render output type: {type(img)}")
-        # if isinstance(img, (list, tuple)) and len(img) > 0 and img[0] is not None:
-        #     print(f"[DEBUG PushTEnv] img[0] shape: {img[0].shape}")
-        #     print(f"[DEBUG PushTEnv] img[0] dtype: {img[0].dtype}")
-        #     raw_img = img[0][idx_np, :]
-        #     print(f"[DEBUG PushTEnv] After indexing img[0][idx_np, :] shape: {raw_img.shape}")
-        # else:
-        #     print(f"[DEBUG PushTEnv] Camera render returned invalid data: {img}")
-
         # jnt_pos = [self.robot.get_dofs_position(idx, envs_idx=np.arange(self.n_envs)) for idx in self.dofs_idx]
         agent_pos_torch = self.robot.get_links_pos(self.eef_idx, envs_idx)  # torch tensor from Genesis
 
         """
-        On linux or windows machine that supports env_separate for rigid rendering, the video saving could be separated into multi envs with
-        _idx, and the imgs is returned with the idx at the dim0 
-        """
-        # obs = {
-        #     'envs_idx': envs_idx,  # keep as torch tensor
-        #     'image': to_torch(img[0][idx_np, :]),  # convert numpy to torch
-        #     'agent_pos': agent_pos_torch[idx_np, 0, :2]  # torch tensor indexed with numpy
-        # }
-        """
         On mac, because we can't use env_separate option as the opengl version does not support mac, we only render one env one time, 
         and the returned image does not have the first dim showing the idx.
-        """ 
-        
-        # print(img[0].shape)
-        obs = {
-            'envs_idx': envs_idx,  # keep as torch tensor
-            'image': torch.unsqueeze(to_torch(img[0].copy()), dim=0),  # convert numpy to torch
-            'agent_pos': agent_pos_torch[idx_np, 0, :2]  # torch tensor indexed with numpy
-        }
 
-        # marker_pos = self.plane.get_links_pos(self.marker_idx, envs_idx)     
+        On linux or windows machine that supports env_separate for rigid rendering, the video saving could be separated into multi envs with
+        _idx, and the imgs is returned with the idx at the dim0 
+        """ 
+        if gs.device == torch.device('mps:0') or gs.device ==torch.device('mps'):  
+            obs = {
+                'envs_idx': envs_idx,  # keep as torch tensor
+                'image': torch.unsqueeze(to_torch(img[0].copy()), dim=0),  # convert numpy to torch
+                'agent_pos': agent_pos_torch[idx_np, 0, :2]  # torch tensor indexed with numpy
+            }
+        else:
+            obs = {
+                'envs_idx': envs_idx,  # keep as torch tensor
+                'image': to_torch(img[0][idx_np, :]),  # convert numpy to torch
+                'agent_pos': agent_pos_torch[idx_np, 0, :2]  # torch tensor indexed with numpy
+            }
+
         return obs
     
     def _get_info(self, envs_idx: Optional[torch.Tensor] = None) -> Dict[str, torch.Tensor]:
+
         if envs_idx is None:
             envs_idx = torch.arange(self.n_envs, device=gs.device, dtype=torch.int32)
         elif not isinstance(envs_idx, torch.Tensor):
             raise ValueError("envs_idx must be torch.Tensor for GPU simulation API!")
-        idx_np = to_numpy(envs_idx, float=False)  # numpy indices for array indexing 
-        info = {
-            'envs_idx': envs_idx,  # keep as torch tensor
-            "agent_pos": self.eef.get_pos()[idx_np, :2],  # torch tensor indexed with numpy
-            "goal_pos": self.plane.get_links_pos(self.marker_idx)[idx_np, :2],  # torch tensor indexed with numpy
-        }
+        info = self._get_poses(envs_idx=envs_idx, global_write=False, ret=True).copy()
+        info['envs_idx'] = envs_idx
+
         return info
     
 if __name__ == '__main__':
@@ -825,10 +770,12 @@ if __name__ == '__main__':
     # env.start_recording()
     for i in range(5000):
         current_time = time.time()
-        env.step(action=torch.tensor([[-0.5, 0.5, 0.27]]))
+        _, _, _, info = env.step(action=torch.tensor([[-0.5, 0.5, 0.27]]))
         # env.step()
         finishing_time = time.time()
         executing_time = finishing_time - current_time
+
+        print(info)
 
         time_to_wait = 0.1 - executing_time
         if(time_to_wait > 0):

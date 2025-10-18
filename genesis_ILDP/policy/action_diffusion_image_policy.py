@@ -42,6 +42,7 @@ class ActionDiffusionImagePolicy(BaseImagePolicy):
                  pos_encoder_dropout: float = 0.0,  # Dropout rate for position encoder MLP
                  unet_dropout: float = 0.0,  # Dropout rate for UNet FiLM layers
                  time_encoder_dropout: float = 0.0,  # Dropout rate for time encoding MLP
+                 use_time_mlp_encoding= True, # default use mlp encoding for time embedding
                  **kwargs):
         super().__init__()
         
@@ -133,7 +134,7 @@ class ActionDiffusionImagePolicy(BaseImagePolicy):
         self.conditioned_unet = Unet(dim_global_features, input_dim=self.action_dim, dropout=unet_dropout)  # forward(x, global_cond)
 
         # Initialize time encoding module (now a nn.Module with MLP processing)
-        self.time_encoding_net = time_encoding(t_emb_dim=time_encoding_dim, dropout=time_encoder_dropout)
+        self.time_encoding = time_encoding(t_emb_dim=time_encoding_dim, dropout=time_encoder_dropout, use_mlp_layer=use_time_mlp_encoding)
         self.merge_multimodal_encoding = merge_multimodal_encoding
 
         if encode_agent_pos:
@@ -363,7 +364,7 @@ class ActionDiffusionImagePolicy(BaseImagePolicy):
         noisy_action = sqrt_alpha_cumprod * action + sqrt_one_minus_alpha_cumprod * random_noise
 
         # Encode observations and time
-        t_encoding = torch.stack([self.time_encoding_net(t.item()) for t in random_t], dim=0)
+        t_encoding = torch.stack([self.time_encoding(t.item()) for t in random_t], dim=0)
         # Apply cropping before vision encoding (training mode)
         imgs_cropped = self._apply_crop(imgs_stack, training=True)
         imgs_encoding = self.imgs_encoding_net(imgs_cropped).reshape(batch_size, -1)
@@ -425,7 +426,7 @@ class ActionDiffusionImagePolicy(BaseImagePolicy):
 
         for step_idx, t in enumerate(reversed(range(1, self.diff_steps + 1))):
             # Time encoding
-            t_features = torch.stack([self.time_encoding_net(t).to(device=imgs.device)
+            t_features = torch.stack([self.time_encoding(t).to(device=imgs.device)
                                     for _ in range(batch_size)], dim=0)
 
             global_features_t = self.merge_multimodal_encoding(imgs_features, pos_features, t_features)
@@ -529,7 +530,7 @@ class ActionDiffusionImagePolicy(BaseImagePolicy):
 
         # DDIM reverse process
         for step_idx, i in enumerate(reversed(sample_steps)):
-            t_features = torch.stack([self.time_encoding_net(i).to(device=imgs.device)
+            t_features = torch.stack([self.time_encoding(i).to(device=imgs.device)
                                     for _ in range(batch_size)], dim=0)
             global_features_t = self.merge_multimodal_encoding(imgs_features, pos_features, t_features)
 

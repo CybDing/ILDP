@@ -252,11 +252,11 @@ class time_encoding(nn.Module):
     Sinusoidal time embedding with MLP processing.
     Keeps original sinusoidal encoding, then processes through MLP for better representation.
     """
-    def __init__(self, t_emb_dim=128, dropout=0.0):
+    def __init__(self, t_emb_dim=128, dropout=0.0, use_mlp_layer=True):
         super().__init__()
         self.t_emb_dim = t_emb_dim
-
-        # MLP to process sinusoidal embeddings: expand 4x then project back
+        self.use_mlp_layer = use_mlp_layer
+        
         layers = [
             nn.Linear(t_emb_dim, t_emb_dim * 4),
             nn.Mish(),
@@ -265,7 +265,8 @@ class time_encoding(nn.Module):
             layers.append(nn.Dropout(dropout))
         layers.append(nn.Linear(t_emb_dim * 4, t_emb_dim))
 
-        self.mlp = nn.Sequential(*layers)
+        if use_mlp_layer:
+            self.mlp = nn.Sequential(*layers)
 
     def forward(self, t):
         """
@@ -283,8 +284,10 @@ class time_encoding(nn.Module):
         modified_freq = t * base_freq
         sinusoidal_encoding = torch.cat([torch.sin(modified_freq), torch.cos(modified_freq)], dim=0).contiguous()
 
-        # Process through MLP for better encoding
-        final_encoding = self.mlp(sinusoidal_encoding)
+        if self.use_mlp_layer:
+            final_encoding = self.mlp(sinusoidal_encoding)
+        else:
+            final_encoding = sinusoidal_encoding
 
         return final_encoding
 

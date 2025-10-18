@@ -1,0 +1,67 @@
+# checkpoint_path: /Users/ding/Downloads/checkpoints/checkpoints-old.ckpt # /home/jiaoda/LeqiDing/ILDP-main/genesis_ILDP/data/checkpoints/epoch=0400-test_mean_score=6.454.ckpt
+checkpoint_path: ../data/checkpoints/epoch=0250-test_mean_score=4.094.ckpt
+
+output_dir: ../data/eval/bs64fullDS/  # Output directory (null = use Hydra's auto output dir)
+confirm_overwrite: true  # Ask for confirmation before overwriting existing output
+
+# device: cuda:0
+device: cuda:0
+
+use_ema: true
+
+# === HYDRA CONFIGURATION ===
+# Set Hydra to use our output_dir
+hydra:
+  run:
+    dir: ${output_dir}  # Use the specified output_dir for Hydra outputs 
+
+
+# === ENV RUNNER OVERRIDE (OPTIONAL) ===
+# You can also partially override specific parameters via command line:
+#   python eval.py checkpoint_path=/path/to/ckpt eval.env_runner.n_test=50
+env_runner: null
+
+# Example custom runner (uncomment and modify as needed):
+# env_runner:
+#   _target_: genesis_ILDP.env_runner.pusht_image_runner.PushTImageRunner
+#   output_dir: ${output_dir}  # Will be set automatically
+#   n_test: 20
+#   n_test_vis: 10
+#   n_train: 0
+#   n_train_vis: 0
+#   test_start_seed: 100000
+#   train_start_seed: 0
+#   max_steps: 300
+#   fps: 30
+#   enable_render: true
+#   n_action_steps: 8
+#   n_obs_steps: 2
+#   past_action: false
+#   n_envs: null
+
+overrides: 
+
+  training:
+    device: ${device}
+  
+  policy: 
+    use_time_mlp_encoding: false  # match current model setting with mlp layers as default
+
+  task:
+    env_runner:
+      n_test: 1
+      n_train: 0
+      device: ${device}
+      show_interactive_viewer: false  # Show the interactive viewer on mac
+      output_dir: ../data/eval/bs64fullDS/media/  # Specify media output dir for videos
+
+# Example overrides
+# overrides:
+#   policy:
+#     ddim_steps: 10  # Use fewer diffusion steps for faster evaluation
+#     noise_intensity: 0.0
+#   task:
+#     env_runner:
+#       n_test: 50  # Override just the number of test episodes
+#       max_steps: 500
+

@@ -13,5 +13,5 @@ env_path = {
     'cube': cube_path,
     "TCube": Tcube_path
 }
-target_folder = os.path.join(file_path, '../data/video/')
-target_folder1 = os.path.join(file_path, '../data/media/')
+# target_folder = os.path.join(file_path, '../data/video/')
+# target_folder1 = os.path.join(file_path, '../data/media/')

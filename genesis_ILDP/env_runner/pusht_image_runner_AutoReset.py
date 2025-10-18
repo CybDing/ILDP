@@ -50,11 +50,21 @@ class PushTImageRunner(BaseImageRunner):
                  done_ratio = 0.85, 
                  episode_recording = False,
                  video_dir = None,  
-                 spawn_center = (-0.3, 0.3), 
+                 spawn_center = (-0.3, 0.3),
                  spawn_range_scale = 0.65,
-                 show_interactive_viewer=False,  
+                 # Manual assistant parameters
+                 enable_manual_assistant = True,
+                 stagnation_steps = 10,  # N: consecutive steps for detection
+                 agent_pos_threshold = 0.01,  # Movement threshold for agent (easily editable)
+                 object_pos_threshold = 0.005,  # Movement threshold for object XY (easily editable)
                  ):
         super().__init__(output_dir)
+
+        # Manual assistant configuration
+        self.enable_manual_assistant = enable_manual_assistant
+        self.stagnation_steps = stagnation_steps
+        self.agent_pos_threshold = agent_pos_threshold
+        self.object_pos_threshold = object_pos_threshold
         if n_envs is None:
             self.n_envs = n_train + n_test
             print(f"Using computed n_envs: {self.n_envs} (train: {n_train}, test: {n_test})")
@@ -81,12 +91,13 @@ class PushTImageRunner(BaseImageRunner):
         self.env_seeds = None
         self.info = None
         self.done_ratio = done_ratio
-        self.show_interactive_viewer = show_interactive_viewer
 
         # Initialize video manager with configurable directory
         if video_dir is None:
-            video_dir = output_dir  # Fallback to default
-
+            try:
+                video_dir = target_folder1  # Fallback to config default
+            except NameError:
+                video_dir = output_dir  # Ultimate fallback to output_dir
 
         self.video_manager = VideoManager(
             base_video_path=video_dir,
@@ -137,6 +148,11 @@ class PushTImageRunner(BaseImageRunner):
             'reward': [],
             'episode_ends': []  # Records global_step index where each episode ends
         }
+
+        # Manual assistant buffers for stagnation detection
+        # Each env has a deque storing recent agent_pos and object_pose for comparison
+        self.agent_pos_history = [collections.deque(maxlen=stagnation_steps) for _ in range(self.n_envs)]
+        self.object_pose_history = [collections.deque(maxlen=stagnation_steps) for _ in range(self.n_envs)]
         """
         Shape meta for the episode buffer:
 
@@ -355,8 +371,7 @@ class PushTImageRunner(BaseImageRunner):
         if self.device == 'cuda:0' or self.device == 'cuda':
             self.env.start(n_envs=self.n_envs, env_separate=True, show_interact_viewer = False)
         else:
-            self.env.start(n_envs=self.n_envs, env_separate=False, show_interact_viewer = self.show_interactive_viewer) 
-            # The mac does not support separate the env for rendering
+            self.env.start(n_envs=self.n_envs, env_separate=False, show_interact_viewer = False) # The mac does not support separate the env for rendering
 
         print(f"------SETUP COMPLETE!------\
               \n Configuration:  n_test={self.n_test},  n_train={self.n_train}, \
@@ -396,6 +411,11 @@ class PushTImageRunner(BaseImageRunner):
         self.completion_timesteps = [None] * self.n_envs  # CRITICAL: Reset completion timesteps!
         self.global_timestep = 0  # Reset global timestep counter
 
+        # Reset manual assistant buffers
+        if self.enable_manual_assistant:
+            self.agent_pos_history = [collections.deque(maxlen=self.stagnation_steps) for _ in range(self.n_envs)]
+            self.object_pose_history = [collections.deque(maxlen=self.stagnation_steps) for _ in range(self.n_envs)]
+
 
     def _process_generated_videos(self):
         """Process generated videos using VideoManager."""
@@ -404,6 +424,81 @@ class PushTImageRunner(BaseImageRunner):
     def _cleanup_temp_files(self):
         """Clean up temporary video files using VideoManager."""
         self.video_manager.cleanup_temp_files()
+
+    def _detect_stagnation(self, env_idx, current_agent_pos, current_obj_pose):
+        """
+        Detect if an environment is stagnant (robot or object not moving).
+
+        Args:
+            env_idx: Environment index
+            current_agent_pos: Current agent position tensor (2D)
+            current_obj_pose: Current object pose tensor (x, y, z, roll, pitch, yaw)
+
+        Returns:
+            bool: True if stagnation detected
+        """
+        if not self.enable_manual_assistant:
+            return False
+
+        # Extract XY position and yaw for object (ignoring z, roll, pitch for 2D scenario)
+        obj_xy_yaw = torch.tensor([
+            current_obj_pose[0].item(),  # x
+            current_obj_pose[1].item(),  # y
+            current_obj_pose[5].item(),  # yaw
+        ], device=current_obj_pose.device)
+
+        # Update histories
+        self.agent_pos_history[env_idx].append(current_agent_pos.clone())
+        self.object_pose_history[env_idx].append(obj_xy_yaw)
+
+        # Need full history buffer to detect stagnation
+        if len(self.agent_pos_history[env_idx]) < self.stagnation_steps:
+            return False
+
+        # Check agent stagnation: max movement over N steps < threshold
+        agent_positions = torch.stack(list(self.agent_pos_history[env_idx]), dim=0)  # (N, 2)
+        agent_displacements = torch.diff(agent_positions, dim=0)  # (N-1, 2)
+        agent_distances = torch.norm(agent_displacements, dim=1)  # (N-1,)
+        max_agent_movement = agent_distances.max().item()
+
+        # Check object stagnation: max movement over N steps < threshold (XY + yaw)
+        obj_poses = torch.stack(list(self.object_pose_history[env_idx]), dim=0)  # (N, 3)
+        obj_xy_displacements = torch.diff(obj_poses[:, :2], dim=0)  # (N-1, 2) - only XY
+        obj_distances = torch.norm(obj_xy_displacements, dim=1)  # (N-1,)
+        max_obj_movement = obj_distances.max().item()
+
+        # Stagnation detected if either condition is met
+        agent_stagnant = max_agent_movement < self.agent_pos_threshold
+        object_stagnant = max_obj_movement < self.object_pos_threshold
+
+        return agent_stagnant or object_stagnant
+
+    def _manual_reset_env(self, envs_idx, info):
+        """
+        Manually reset the T-pose for a stagnant environment.
+
+        Args:
+            env_idx: Environment index to reset
+        """
+
+        # set them back to homepos which might be far away from the cur_pos(or change into four corners version with better ? check )  
+        self.env.robot.set_dofs_position(
+            envs_idx = envs_idx, 
+            position=self.env.home_pos,
+            dofs_idx_local=self.env.robot_dofs_idx[0:7],
+        )
+
+        self.env.robot.control_dofs_position(
+            envs_idx = envs_idx, 
+            position=self.env.home_pos,
+            dofs_idx_local=self.env.robot_dofs_idx[0:7],
+        )
+
+        # Clear histories for this env after reset
+        self.agent_pos_history[envs_idx].clear()
+        self.object_pose_history[envs_idx].clear()
+
+        print(f"[Manual Assistant] Env {envs_idx} reset due to stagnation")
 
     def _process_info(self, obs, reward, info, env_status, final_saving=False):
         """Process environment info and rewards.
@@ -419,13 +514,30 @@ class PushTImageRunner(BaseImageRunner):
             self.info = info
 
         active_env_indices = []
+        manual_reset_indices = []  # Track envs needing manual reset
+
         for i in range(self.n_envs):
             if reward[i] is None:
                 raise ValueError("Reward saving error!")
             self.episode_reward[i].append(reward[i].cpu().numpy())
 
             if env_status[i] == 2:  # Still active
-                active_env_indices.append(i)
+                # Check for stagnation before adding to active list
+                if self.enable_manual_assistant and 'agent_pos' in info and 'cur_Tpose' in info:
+                    is_stagnant = self._detect_stagnation(
+                        i,
+                        info['agent_pos'][i],
+                        info['cur_Tpose'][i]
+                    )
+
+                    if is_stagnant:
+                        # Mark for manual reset, do NOT add to active envs (action ignored)
+                        manual_reset_indices.append(i)
+                        self._manual_reset_env(i, info)
+                    else:
+                        active_env_indices.append(i)
+                else:
+                    active_env_indices.append(i)
 
             elif env_status[i] == 3:  # Natural success
                 # Record per-env timestep when this environment succeeded
