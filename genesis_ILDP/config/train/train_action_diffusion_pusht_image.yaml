@@ -30,7 +30,6 @@ shape_meta:
       shape: [2]               # 2D agent position
       type: low_dim
 
-# === POLICY CONFIGURATION ===
 policy:
   _target_: genesis_ILDP.policy.action_diffusion_image_policy.ActionDiffusionImagePolicy
   
@@ -39,38 +38,63 @@ policy:
   horizon: ${horizon}
   n_action_steps: ${n_action_steps}
   n_obs_steps: ${n_obs_steps}
-  obs_steps: ${n_obs_steps}    # For your custom ActionDiffusion model
-  enable_crop: true
-  crop_shape: [3, 88, 88]
+  obs_steps: ${n_obs_steps} 
+  variance_threshold: 10
   
-  # Diffusion parameters (standard settings)
+  # Diffusion parameters 
   diff_steps: 100              # Number of diffusion steps
-  scheduler_mode: 'Cosine'     # Your custom scheduler mode
-  # num_inference_steps: 100     # Inference steps
-
-  # Encoding settings
-  img_encoding_dim: 512      # IMPORTANT: This parameter is IGNORED when using ResNet18!
-                              # - Without spatial_softmax: outputs 512 (from ResNet18's avgpool)
-                              # - With spatial_softmax: outputs 1024 (512 channels × 2 coords)
-                              # Only used for 'custom' backbone to set FC output dimension
-  time_encoding_dim: 128      # Time step encoding dimension
-  pos_encoding_dim: null      # No positional encoding
-  encode_agent_pos: false      # Set to false to match reference DP architecture
-  vision_backbone: 'resnet18'  # Vision backbone
-  vision_pretrained: false     # Set to false for end-to-end training from scratch
-  use_spatial_softmax: false    # Use spatial softmax pooling (paper recommended, outputs 1024 dims)
-  spatial_softmax_temp: 1.0    # Temperature for spatial softmax (lower=sharper, higher=smoother)
-
-  # Dropout settings for regularization (helps prevent overfitting)
-  vision_encoder_dropout: 0.0  # Dropout rate for vision encoder MLP (0.0=disabled, try 0.1-0.3)
-  pos_encoder_dropout: 0.0     # Dropout rate for position encoder MLP (0.0=disabled, try 0.1-0.3)
-  unet_dropout: 0.0            # Dropout rate for UNet FiLM layers (0.0=disabled, try 0.1-0.3)
-  time_encoder_dropout: 0.0    # Dropout rate for time encoding MLP (0.0=disabled, try 0.1-0.3)
-
-  # DDIM settings for inference (training uses DDPM)
+  
+  use_ddpm: true               # Use DDPM sampling (true) or DDIM (false)
   # ddim_steps: 15               # Number of DDIM steps for inference
-  # noise_intensity: 0.0         # DDIM noise intensity (0.0=deterministic)
+  # noise_intensity: 0.0         # DDIM noise intensity (0.0=deterministic ddpm)
 
+  cropper: # set null to disable cropping
+    _target_: genesis_ILDP.model.common.random_crop.RandomCropper
+    input_shape: ${shape_meta.obs.image.shape}
+    crop_shape: [3, 84, 84]
+    num_crops: 1
+    pos_enc: false
+  
+
+  imgs_encoding_net:
+    _target_: genesis_ILDP.model.encoding.img_encoding_cnn
+    in_channels: 3
+    encoded_dim: 512   # This parameter is IGNORED when using ResNet18!
+    backbone: 'resnet18'        # Vision backbone
+    pretrained: false           # Set to false for end-to-end training from scratch
+    use_spatial_softmax: false
+    spatial_softmax_temp: 1.0
+    input_image_shape: ${cropper.crop_shape if cropper is not null else shape_meta.obs.image.shape}
+     # Use cropped shape if cropping enabled, else full image shape
+    dropout: 0.0
+    # - Without spatial_softmax: outputs 512 (from ResNet18's avgpool)
+            # - With spatial_softmax: outputs 1024 (512 channels × 2 coords)
+            # Only used for 'custom' backbone to set FC output dimension
+
+  time_encoding:
+    _target_: genesis_ILDP.model.encoding.time_encoding
+    t_emb_dim: 128
+    use_mlp_layer: true
+    dropout: 0.0
+  
+  pos_encoding:
+    _target_: genesis_ILDP.model.encoding.pos_encoding
+    encoded_dim: 128
+    agent_pos_dim: 2
+    dropout: 0.0
+
+  condition_unet:
+    _target_: genesis_ILDP.model.conditioned_unet.Unet
+    dim_mults: [1, 2, 4, 8]
+    dim_global_features: ${eval:'${policy.imgs_encoding_net.encoded_dim} * ${n_obs_steps} + ${policy.time_encoding_dim} + (${policy.encoded_dim}
+     if ${policy.pos_encoding} is not null else ${policy.pos_encoding.agent_pos_dim}) * ${n_obs_steps}'}
+    dropout: 0.0
+ 
+  noise_scheduler:
+    _target_: genesis_ILDP.model.common.Scheduler.NoiseScheduler
+    mode: 'cosine'
+    device: 'cuda:0'      
+  
 # === TASK CONFIGURATION ===
 task:
   name: pusht_image

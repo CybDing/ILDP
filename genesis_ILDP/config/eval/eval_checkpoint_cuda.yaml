@@ -42,7 +42,7 @@ env_runner: null
 overrides: 
 
   training:
-    device: ${device}
+    device: cuda:0
   
   policy: 
     use_time_mlp_encoding: false  # match current model setting with mlp layers as default
@@ -51,7 +51,7 @@ overrides:
     env_runner:
       n_test: 1
       n_train: 0
-      device: ${device}
+      device: cuda:0
       show_interactive_viewer: false  # Show the interactive viewer on mac
       output_dir: ../data/eval/bs64fullDS/media/  # Specify media output dir for videos
 

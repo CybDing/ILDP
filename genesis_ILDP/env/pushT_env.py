@@ -34,13 +34,13 @@ class PushTEnv(gym.Env):
                  show_fps = True,
                  device = None,
                  done_ratio = 0.85,
-                 spawn_center=(-0.3, 0.3),  # Center of spawn region (x, y)
+                 spawn_center=(-0.45, 0.45),  # Center of spawn region (x, y)
                  spawn_range_scale=0.6,      # Scale factor for spawn range (1.0 = use xlim/ylim)
                  ):
 
         self.render_size = render_size
         self.sim_hz = 100.0 # sim_hz represent the actual simulation timestep for robotic manipulation 
-        self.control_hz = 5.0 # control_hz represent the control frequency of receiving a new action from controller
+        self.control_hz = 10.0 # control_hz represent the control frequency of receiving a new action from controller
         self.is_init = False
         self._seed = seed
         self.scene = None
@@ -139,7 +139,7 @@ class PushTEnv(gym.Env):
 
         self.robot : gs.engine.entities.RigidEntity = self.scene.add_entity(
             gs.morphs.URDF(
-                pos = (0, 0, 0.3),
+                pos = (0, 0, 0),
                 file = self.path['robot'],
                 fixed=True,
                 collision=True,
@@ -163,13 +163,6 @@ class PushTEnv(gym.Env):
                 )
         )
         
-        # self.cam = self.scene.add_camera(
-        #     res=self.render_size,
-        #     pos=(0, 0.3, 0.9),
-        #     lookat=(-0.4, 0.4, 0),
-        #     fov=65,
-        #     GUI=show_camera,
-        # )
 
         self.cam = self.scene.add_camera(
             res=self.render_size,
@@ -178,13 +171,19 @@ class PushTEnv(gym.Env):
             fov=65,
             GUI=show_camera,
         )
+        # self.cam = self.scene.add_camera(
+        #     res=self.render_size,
+        #     pos=(0, 0.3, 0.9),
+        #     lookat=(-0.4, 0.4, 0),
+        #     fov=65,
+        #     GUI=show_camera,
+        # )
 
-        self.cam_attached = self.scene.add_camera(
-            res=self.render_size, 
-            GUI=show_camera,
-            fov=65,
- 
-        )
+        # self.cam_attached = self.scene.add_camera(
+        #     res=self.render_size, 
+        #     GUI=show_camera,
+        #     fov=65,
+        # )
         
         self.scene.build(n_envs=n_envs)
 
@@ -213,7 +212,7 @@ class PushTEnv(gym.Env):
              [0, 0, -1, -0.09], 
              [0, 0, 0, 1]]
         )
-        self.cam_attached.attach(rigid_link = self.eef, offset_T = offset_T)
+        # self.cam_attached.attach(rigid_link = self.eef, offset_T = offset_T)
 
         self.robot.set_dofs_kp(
             kp             = np.array([4500, 4500, 3500, 3500, 2000, 2000, 2000, 100]),
@@ -363,13 +362,19 @@ class PushTEnv(gym.Env):
         #             'target_state': target_state_torch[i].cpu().numpy()
         #         } for i, env_idx in enumerate(envs_idx) if int(env_idx) in [2, 29]
         #     }
+        # home_pos_down = torch.tensor([-0.4602,  1.3013,  2.5882,  1.1296,  0.7087,  0.6787,  1.2742], device=gs.device).repeat(len(envs_idx), 1)
         
-        # home_pos_down = self._ikine(self.eef, 
-        #                             pos=torch.tensor([-0.35, 0.35, 0.3]).repeat(num_reset, 1),
-        #                             quat=torch.tensor([0, 0, 1, 0]).repeat(num_reset, 1), 
-        #                             envs_idx = envs_idx)[:, 0:7]
+        # home pos position at [-0.7, 0.7, 0.6] when the robot base link is on the ground
+        # home_pos_down = torch.tensor([2.5575,  -1.6492,  0.0000, -1.4629,  0.0000,  -1.3845,  1.8101], device=gs.device).repeat(len(envs_idx), 1)
+        # home_pos_down_full = torch.cat([home_pos_down, torch.zeros(len(envs_idx), 7)],
+        #                                 dim=1)
 
-        home_pos_down = torch.tensor([-0.4602,  1.3013,  2.5882,  1.1296,  0.7087,  0.6787,  1.2742], device=gs.device).repeat(len(envs_idx), 1)
+        home_pos_down = self._ikine(self.eef, 
+                                    pos=torch.tensor([-0.4, 0.4, 0.4]).repeat(num_reset, 1),
+                                    quat=torch.tensor([0, 0, 1, 0]).repeat(num_reset, 1), 
+                                    envs_idx = envs_idx, 
+                                    init_qpos=None)[:, 0:7]
+                    
         self.home_pos = home_pos_down
         # home_pos_down = torch.tensor([-0.3794,  1.3189,  2.6545,  1.5788,  1.0798,  1.0309,  0.8671]).repeat(self.n_envs, 1)
 
@@ -451,7 +456,7 @@ class PushTEnv(gym.Env):
         steps = 0
         for _ in range(n_steps):
             self.scene.step()
-            if (steps+1) % 3 == 0: # make sure that the frames being rendered is at about 30 fps
+            if (steps+1) % 9 == 0: # make sure that the frames being rendered is at about 30 fps
                 # Always get observations for ALL environments to maintain consistent indexing
                 observation = self._get_obs(rgb=True, envs_idx=all_envs_idx) # render less for faster simulation 
             steps = steps + 1
@@ -494,12 +499,11 @@ class PushTEnv(gym.Env):
     
     def stop_recording(self, filename=None):
         # target_folder is configured in env_config
-        os.makedirs(target_folder, exist_ok=True)
-        # old_dir = os.getcwd()
-        # os.chdir(target_folder)
 
-        if filename is None:
-            filename = os.path.join(target_folder, time.strftime("%Y%m%d-%H-%M") + "-pushT-env.mp4")
+        # if filename is None:
+        #     os.makedirs(target_folder, exist_ok=True)
+        #     filename = os.path.join(target_folder, time.strftime("%Y%m%d-%H-%M") + "-pushT-env.mp4")
+        
         self.cam.stop_recording(save_to_filename=filename, fps=self.fps)
         
         # os.chdir(old_dir)
@@ -643,15 +647,22 @@ class PushTEnv(gym.Env):
 
     def _ikine(self, link: gs.engine.entities.rigid_entity.RigidLink, 
                pos: torch.Tensor, quat: torch.Tensor, 
-               envs_idx: torch.Tensor) -> torch.Tensor: 
+               envs_idx: torch.Tensor, init_qpos=None) -> torch.Tensor: 
+        
+
+        if init_qpos is None: init_qpos = self.robot.get_dofs_position(envs_idx = envs_idx)
+        # control_idx = [0, 1, 3, 4, 5, 6]
+        control_idx = list(range(7))
         qpos = self.robot.inverse_kinematics(
             link=link,
-            init_qpos = self.robot.get_dofs_position(envs_idx = envs_idx),
+            init_qpos=init_qpos, 
             pos=pos,  
             quat=quat, 
-            dofs_idx_local=self.robot_dofs_idx[0:7],
-            envs_idx=envs_idx 
+            dofs_idx_local=[self.robot_dofs_idx[idx] for idx in control_idx],
+            envs_idx=envs_idx, 
+            # respect_joint_limit=False
         )
+        print(qpos)
         return qpos
     
 
@@ -694,7 +705,7 @@ class PushTEnv(gym.Env):
         # sometimes when the dofs initial pos 0 is not aligned with the urdf file the cooridate 0 which has a small bias, the value here using the dofs is not accurate 
         cur_Tpose_torch = self.cube.get_dofs_position(self.cube_dofs_idx, envs_idx)
         target_Tpose_torch = self.plane.get_dofs_position(self.marker_center_dof_idx, envs_idx)
-        agent_pos_torch = self.robot.get_links_pos(self.eef_idx, envs_idx)[:, 0, :2]
+        agent_pos_torch = self.robot.get_links_pos(self.eef_idx, envs_idx)[:, 0, :]
 
         if global_write:
             self.poses = {
@@ -718,7 +729,7 @@ class PushTEnv(gym.Env):
 
         # img (list:[w, h, 3],NoneType,NoneType,NoneType)
         img = self.cam.render(rgb=rgb, depth=depth, segmentation=segmentation, normal=normal)
-        img_attached = self.cam_attached.render(rgb=rgb, depth=depth, segmentation=segmentation, normal=normal) # render the eef attached cam scene 
+        # img_attached = self.cam_attached.render(rgb=rgb, depth=depth, segmentation=segmentation, normal=normal) # render the eef attached cam scene 
 
         self.render_cache = img
         idx_np = to_numpy(envs_idx, float=False)  # numpy indices for array indexing
@@ -761,7 +772,7 @@ class PushTEnv(gym.Env):
     
 if __name__ == '__main__':
     env = PushTEnv()
-    env.start(n_envs=1, show_camera=True, show_interact_viewer=True, 
+    env.start(n_envs=1, show_camera=False, show_interact_viewer=False, 
               env_separate=False, seed=[0])
     env.seed([0])
     env.reset()
@@ -770,16 +781,18 @@ if __name__ == '__main__':
     # env.start_recording()
     for i in range(5000):
         current_time = time.time()
-        _, _, _, info = env.step(action=torch.tensor([[-0.5, 0.5, 0.27]]))
-        # env.step()
+        # _, _, _, info = env.step(action=torch.tensor([[-0.4, 0.4, 0.4]]))
+        _, _, _, info = env.step()
+
         finishing_time = time.time()
         executing_time = finishing_time - current_time
 
-        print(info)
+        # print(info)
+        print(executing_time)
 
         time_to_wait = 0.1 - executing_time
-        if(time_to_wait > 0):
-            time.sleep(time_to_wait)
+        # if(time_to_wait > 0):
+        #     time.sleep(time_to_wait)
 
         env.robot.control_dofs_position(position = torch.Tensor([0.0]).repeat((env.n_envs, 1)), dofs_idx_local = env.gripper_idx, envs_idx = None)
         # if i % 10 == 0: 

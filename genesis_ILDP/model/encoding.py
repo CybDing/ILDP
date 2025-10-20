@@ -84,7 +84,7 @@ class SpatialSoftmax(nn.Module):
     def __repr__(self):
         return f"SpatialSoftmax(channels={self.channel}, spatial_dims=({self.height}, {self.width}), temperature={self.temperature})"
 
-class global_img_encoding(nn.Module):
+class img_encoding_cnn(nn.Module):
     def __init__(self, in_channels, encoded_dim=512, backbone='resnet18', pretrained=False,
                  use_spatial_softmax=False, spatial_softmax_temp=1.0, input_image_shape=None,
                  dropout=0.0):

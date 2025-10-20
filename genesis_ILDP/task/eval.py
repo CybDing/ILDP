@@ -34,7 +34,7 @@ OmegaConf.register_new_resolver("eval", eval, replace=True)
 @hydra.main(
     version_base=None,
     config_path="../config/eval",
-    config_name="eval_checkpoint"
+    config_name="eval_checkpoint_mps"
 )
 # could use -cn for overriding the config name
 def main(eval_cfg: DictConfig) -> None:

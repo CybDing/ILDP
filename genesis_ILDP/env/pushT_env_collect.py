@@ -665,7 +665,7 @@ class PushTEnv(gym.Env):
 
 if __name__ == '__main__':
     env = PushTEnv()
-    env.start(n_envs=1, show_camera=False, show_interact_viewer=True, 
+    env.start(n_envs=1, show_camera=True, show_interact_viewer=False, 
               env_separate=False, seed=[0])
     env.seed([0])
     env.reset()

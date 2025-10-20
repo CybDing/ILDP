@@ -382,7 +382,7 @@ class PushTImageRunner(BaseImageRunner):
                 # One-time: Create directory structure
                 self.video_manager.setup_directories()
                 self._video_dirs_initialized = True
-                print(f"✓ Video dirs: {self.video_manager.train_video_dir.parent}")
+                print(f"✓ Video dirs: {self.video_manager.train_video_dir.parent.parent}") # timestep -> train -> parent
 
             # Every run: Update paths with current seeds
             self.video_manager.update_file_paths(self.seed_train, self.seed_test)
