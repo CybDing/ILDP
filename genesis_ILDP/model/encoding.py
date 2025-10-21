@@ -6,6 +6,11 @@ import torch.nn.functional as F
 import numpy as np
 from genesis_ILDP.utils.cuda import to_torch
 from torchvision import models
+from genesis_ILDP.model.vision_transformer import (
+    vit_tiny, vit_small, vit_base, vit_large, vit_custom
+)
+# Import the clean ViT encoding wrapper
+from genesis_ILDP.model.vit_encoding import vit_img_encoding
 
 def torch_stack_images(imgs:list):
     # images_stack (B * 2 * W * H * C)
@@ -87,19 +92,30 @@ class SpatialSoftmax(nn.Module):
 class global_img_encoding(nn.Module):
     def __init__(self, in_channels, encoded_dim=512, backbone='resnet18', pretrained=False,
                  use_spatial_softmax=False, spatial_softmax_temp=1.0, input_image_shape=None,
-                 dropout=0.0):
+                 dropout=0.0, vit_patch_size=16, vit_depth=12, vit_num_heads=12,
+                 vit_mlp_ratio=4.0, vit_use_cls_token=True, vit_embed_dim=None):
         """
         Image encoder with configurable pooling strategy.
 
         Args:
             in_channels: Number of input channels (e.g., 3 for RGB)
             encoded_dim: Output feature dimension (default: 512)
-            backbone: Backbone architecture ('resnet18' or 'custom')
+            backbone: Backbone architecture ('resnet18', 'custom', 'vit_tiny', 'vit_small',
+                     'vit_base', 'vit_large', 'vit_custom')
             pretrained: Whether to use pretrained weights
             use_spatial_softmax: If True, use spatial softmax pooling instead of global avg pooling
+                                (only for ResNet backbones)
             spatial_softmax_temp: Temperature for spatial softmax (default: 1.0)
-            input_image_shape: Tuple (H, W) of input image size for spatial softmax initialization
+            input_image_shape: Tuple (H, W) of input image size
             dropout: Dropout rate for regularization (default: 0.0, disabled)
+
+            ViT-specific parameters (only used when backbone starts with 'vit'):
+            vit_patch_size: Size of image patches (default: 16)
+            vit_depth: Number of transformer layers (default: 12)
+            vit_num_heads: Number of attention heads (default: 12)
+            vit_mlp_ratio: Ratio of MLP hidden dim to embedding dim (default: 4.0)
+            vit_use_cls_token: Use [CLS] token (True) or global avg pooling (False) (default: True)
+            vit_embed_dim: ViT embedding dimension (only for vit_custom, otherwise auto-set)
         """
         super().__init__()
         self.encoded_dim = encoded_dim
@@ -201,6 +217,59 @@ class global_img_encoding(nn.Module):
                 nn.Linear(256, encoded_dim)
             )
             self.dropout = nn.Dropout(dropout) if dropout > 0 else None
+
+        elif backbone.startswith('vit'):
+            # Vision Transformer backbones
+            # Determine image size (default to 224 if not provided)
+            if input_image_shape is not None:
+                img_h, img_w = input_image_shape
+                # ViT expects square images, use the smaller dimension or average
+                img_size = min(img_h, img_w)
+                if img_h != img_w:
+                    print(f"Warning: ViT expects square images. Using size {img_size}x{img_size}")
+            else:
+                img_size = 224  # Default ViT input size
+                print(f"Warning: input_image_shape not provided for ViT, using default {img_size}x{img_size}")
+
+            # Common ViT parameters
+            vit_kwargs = {
+                'img_size': img_size,
+                'in_channels': in_channels,
+                'output_dim': encoded_dim,
+                'patch_size': vit_patch_size,
+                'dropout': dropout,
+                'use_cls_token': vit_use_cls_token,
+                'pretrained': pretrained
+            }
+
+            # Select ViT variant
+            if backbone == 'vit_tiny':
+                self.feature_extractor = vit_tiny(**vit_kwargs)
+            elif backbone == 'vit_small':
+                self.feature_extractor = vit_small(**vit_kwargs)
+            elif backbone == 'vit_base':
+                self.feature_extractor = vit_base(**vit_kwargs)
+            elif backbone == 'vit_large':
+                self.feature_extractor = vit_large(**vit_kwargs)
+            elif backbone == 'vit_custom':
+                # For custom ViT, use all provided parameters
+                if vit_embed_dim is None:
+                    raise ValueError("vit_embed_dim must be specified for vit_custom backbone")
+                vit_kwargs.update({
+                    'embed_dim': vit_embed_dim,
+                    'depth': vit_depth,
+                    'num_heads': vit_num_heads,
+                    'mlp_ratio': vit_mlp_ratio
+                })
+                self.feature_extractor = vit_custom(**vit_kwargs)
+            else:
+                raise ValueError(f"Unknown ViT variant: {backbone}")
+
+            # ViT outputs features directly, no need for additional dropout
+            # (dropout is already applied internally in ViT)
+            self.dropout = None
+            self.encoded_dim = encoded_dim  # Already set by ViT's output_dim
+
         else:
             raise ValueError(f"Unknown backbone type: {backbone}")
 
@@ -241,6 +310,10 @@ class global_img_encoding(nn.Module):
             # For custom backbone, dropout is already applied if needed
             if self.dropout is not None:
                 features = self.dropout(features)
+        elif self.backbone_type.startswith('vit'):
+            # ViT already outputs (B, encoded_dim), no additional processing needed
+            # Dropout is handled internally in the ViT module
+            pass
 
         return features
     

@@ -56,10 +56,46 @@ policy:
   time_encoding_dim: 128      # Time step encoding dimension
   pos_encoding_dim: null      # No positional encoding
   encode_agent_pos: false      # Set to false to match reference DP architecture
+
+  # === VISION BACKBONE CONFIGURATION ===
+  # Available options: 'resnet18', 'custom', 'vit_tiny', 'vit_small', 'vit_base', 'vit_large', 'vit_custom'
   vision_backbone: 'resnet18'  # Vision backbone
   vision_pretrained: false     # Set to false for end-to-end training from scratch
-  use_spatial_softmax: false    # Use spatial softmax pooling (paper recommended, outputs 1024 dims)
+  use_spatial_softmax: false    # Use spatial softmax pooling (only for ResNet, outputs 1024 dims)
   spatial_softmax_temp: 1.0    # Temperature for spatial softmax (lower=sharper, higher=smoother)
+
+  # === VISION TRANSFORMER (ViT) CONFIGURATION ===
+  # Uncomment these parameters when using ViT backbones (vit_tiny, vit_small, vit_base, vit_large, vit_custom)
+  # vit_patch_size: 16           # Patch size for ViT (8, 16, or 32). Smaller = more patches, more computation
+  # vit_depth: 12                # Number of transformer layers (vit_base: 12, vit_large: 24)
+  # vit_num_heads: 12            # Number of attention heads (vit_base: 12, vit_large: 16)
+  # vit_mlp_ratio: 4.0           # Ratio of MLP hidden dim to embedding dim (standard: 4.0)
+  # vit_use_cls_token: true      # Use [CLS] token (true) or global avg pooling (false)
+  # vit_embed_dim: 512           # ViT embedding dimension (REQUIRED for vit_custom)
+  #                              # Standard dims: vit_tiny=192, vit_small=384, vit_base=768, vit_large=1024
+
+  # === EXAMPLE ViT CONFIGURATIONS ===
+  # Example 1: ViT-Small (lightweight, good for smaller images)
+  # vision_backbone: 'vit_small'
+  # img_encoding_dim: 512        # Output dimension
+  # vit_patch_size: 16           # 16x16 patches
+  # vit_use_cls_token: true
+
+  # Example 2: ViT-Base (standard configuration)
+  # vision_backbone: 'vit_base'
+  # img_encoding_dim: 512        # Output dimension
+  # vit_patch_size: 16           # 16x16 patches
+  # vit_use_cls_token: true
+
+  # Example 3: Custom ViT (fully configurable)
+  # vision_backbone: 'vit_custom'
+  # img_encoding_dim: 512        # Output dimension
+  # vit_patch_size: 8            # Smaller patches for finer details
+  # vit_embed_dim: 384           # REQUIRED for vit_custom
+  # vit_depth: 6                 # Shallower network
+  # vit_num_heads: 6             # Fewer attention heads
+  # vit_mlp_ratio: 4.0           # Standard MLP ratio
+  # vit_use_cls_token: true      # Use CLS token for classification-like task
 
   # Dropout settings for regularization (helps prevent overfitting)
   vision_encoder_dropout: 0.0  # Dropout rate for vision encoder MLP (0.0=disabled, try 0.1-0.3)
