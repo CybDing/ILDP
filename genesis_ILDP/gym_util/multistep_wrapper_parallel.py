@@ -221,7 +221,10 @@ class MultiStepWrapper(gym.Wrapper):
         }
         
         return aggregated_info
-
+    
+    def _get_cur_obs(self, envs_idx, **kwargs):
+        return self.env._get_obs(envs_idx, **kwargs)
+    
     def _get_obs(self, n_steps=1):
         """Get stacked observations for all envs from the deque saving recent observations
             meta_data of observation got from pushT_env.py:

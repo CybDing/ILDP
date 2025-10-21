@@ -1,0 +1,262 @@
+# === TRAINING CONFIGURATION WITH CUSTOM VISION TRANSFORMER ===
+# This config demonstrates how to use vit_custom for full control over ViT architecture
+# All ViT parameters can be customized to experiment with different architectures
+
+_target_: genesis_ILDP.workspace.train_action_diffusion_image_workspace.TrainActionDiffusionImageWorkspace
+
+# === EXPERIMENT SETTINGS ===
+exp_name: "action_diffusion_pusht_vit_custom"
+task_name: pusht_image_vit_custom
+name: train_action_diffusion_vit_custom
+
+# === STANDARD DIFFUSION PARAMETERS ===
+horizon: 16
+n_action_steps: 8
+n_obs_steps: 2
+n_latency_steps: 0
+dataset_obs_steps: 2
+obs_as_global_cond: true
+past_action_visible: false
+keypoint_visible_rate: 1.0
+
+# === SHAPE METADATA ===
+shape_meta:
+  action:
+    shape: [2]
+  obs:
+    image:
+      shape: [3, 96, 96]
+      type: rgb
+    agent_pos:
+      shape: [2]
+      type: low_dim
+
+# === POLICY CONFIGURATION ===
+policy:
+  _target_: genesis_ILDP.policy.action_diffusion_image_policy.ActionDiffusionImagePolicy
+
+  # Shape and basic parameters
+  shape_meta: ${shape_meta}
+  horizon: ${horizon}
+  n_action_steps: ${n_action_steps}
+  n_obs_steps: ${n_obs_steps}
+  obs_steps: ${n_obs_steps}
+  enable_crop: true
+  crop_shape: [3, 96, 96]      # Keep original size for custom ViT
+
+  # Diffusion parameters
+  diff_steps: 100
+  scheduler_mode: 'Cosine'
+
+  # Encoding settings
+  img_encoding_dim: 512        # Final output dimension
+  time_encoding_dim: 128
+  pos_encoding_dim: null
+  encode_agent_pos: false
+
+  # === CUSTOM VISION TRANSFORMER CONFIGURATION ===
+  # Full control over ViT architecture for experimentation
+  vision_backbone: 'vit_custom'
+  vision_pretrained: false
+
+  # Custom ViT architecture parameters
+  vit_patch_size: 16           # Patch size (try: 8, 16, 32)
+  vit_embed_dim: 512           # REQUIRED: ViT embedding dimension (try: 256, 384, 512, 768)
+  vit_depth: 8                 # Number of transformer layers (try: 4, 6, 8, 12)
+  vit_num_heads: 8             # Number of attention heads (must divide vit_embed_dim)
+  vit_mlp_ratio: 4.0           # MLP hidden dim ratio (try: 2.0, 4.0, 8.0)
+  vit_use_cls_token: true      # Use [CLS] token (true) or GAP (false)
+
+  # Dropout for regularization
+  vision_encoder_dropout: 0.1  # Dropout in ViT layers
+  pos_encoder_dropout: 0.0
+  unet_dropout: 0.0
+  time_encoder_dropout: 0.0
+
+# === TASK CONFIGURATION ===
+task:
+  name: pusht_image
+  shape_meta: ${shape_meta}
+
+  dataset:
+    _target_: genesis_ILDP.dataset.pusht_image_dataset.PushTImageDataset
+    zarr_path: genesis_ILDP/data/train_data/merged_data_0925.zarr
+    horizon: ${horizon}
+    pad_before: ${eval:'${n_obs_steps}-1'}
+    pad_after: ${eval:'${n_action_steps}-1'}
+    seed: 42
+    val_ratio: 0.05
+    max_train_episodes: null
+
+  env_runner:
+    _target_: genesis_ILDP.env_runner.pusht_image_runner.PushTImageRunner
+    output_dir: ${multi_run.run_dir}
+    fps: 30
+    max_steps: 600
+    n_action_steps: ${n_action_steps}
+    n_obs_steps: ${n_obs_steps}
+    n_test: 60
+    n_test_vis: 8
+    n_train: 10
+    n_train_vis: 2
+    test_start_seed: 50000
+    train_start_seed: 0
+    n_envs: null
+    enable_past_action: False
+    enable_render: True
+    done_ratio: 0.7
+
+# === TRAINING CONFIGURATION ===
+training:
+  seed: 42
+  device: cuda:0
+  num_epochs: 500
+  batch_size: 64               # Adjust based on GPU memory
+  deterministic: true
+  worker_seed_strategy: offset
+
+  # Learning and optimization
+  lr_scheduler: cosine
+  lr_warmup_steps: 500
+  gradient_accumulate_every: 1
+
+  # Checkpointing and evaluation
+  checkpoint_every: 50
+  val_every: 5
+  rollout_every: 50
+  sample_every: 5
+
+  # Limits
+  max_train_steps: null
+  max_val_steps: null
+
+  # Debugging and logging
+  debug: false
+  tqdm_interval_sec: 1.0
+  use_ema: true
+  resume: false
+
+# === OPTIMIZER CONFIGURATION ===
+optimizer:
+  _target_: torch.optim.AdamW
+  lr: 0.0003
+  betas: [0.9, 0.999]
+  eps: 1.0e-08
+  weight_decay: 0.05
+
+# === DATA LOADING ===
+dataloader:
+  batch_size: ${training.batch_size}
+  num_workers: 8
+  persistent_workers: true
+  pin_memory: true
+  prefetch_factor: 2
+  shuffle: true
+  drop_last: true
+
+val_dataloader:
+  batch_size: ${training.batch_size}
+  num_workers: 8
+  persistent_workers: true
+  pin_memory: true
+  prefetch_factor: 2
+  shuffle: false
+
+# === EMA CONFIGURATION ===
+ema:
+  _target_: genesis_ILDP.model.common.ema_model.EMAModel
+  inv_gamma: 1.0
+  max_value: 0.9999
+  min_value: 0.0
+  power: 0.75
+  update_after_step: 0
+
+# === CHECKPOINT CONFIGURATION ===
+checkpoint:
+  save_last_ckpt: true
+  save_last_snapshot: false
+  topk:
+    format_str: epoch={epoch:04d}-test_mean_score={test_mean_score:.3f}.ckpt
+    k: 5
+    mode: max
+    monitor_key: test_mean_score
+
+# === LOGGING CONFIGURATION ===
+logging:
+  mode: online
+  project: genesis_ILDP_action_diffusion
+  group: action_diffusion_pusht_vit_custom
+  name: ${exp_name}_${now:%Y.%m.%d-%H.%M.%S}
+  tags:
+    - action_diffusion_image
+    - pusht_image
+    - vision_transformer
+    - vit_custom
+  id: null
+  resume: false
+
+# === OUTPUT CONFIGURATION ===
+multi_run:
+  run_dir: outputs/${now:%Y.%m.%d}/${now:%H.%M.%S}_${exp_name}
+  wandb_name_base: ${now:%Y.%m.%d}-${now:%H.%M.%S}_${exp_name}
+
+
+# ============================================================================
+# === EXPERIMENTATION GUIDE FOR CUSTOM ViT ===
+# ============================================================================
+#
+# This config allows you to fully customize the ViT architecture.
+# Here are some architectural choices to experiment with:
+#
+# 1. LIGHTWEIGHT ViT (Fast, lower memory, may underfit):
+#    vit_patch_size: 16
+#    vit_embed_dim: 256
+#    vit_depth: 4
+#    vit_num_heads: 4
+#    vit_mlp_ratio: 2.0
+#    Parameters: ~3M
+#
+# 2. BALANCED ViT (Current config - good starting point):
+#    vit_patch_size: 16
+#    vit_embed_dim: 512
+#    vit_depth: 8
+#    vit_num_heads: 8
+#    vit_mlp_ratio: 4.0
+#    Parameters: ~35M
+#
+# 3. DETAILED ViT (Smaller patches for fine details):
+#    vit_patch_size: 8          # More patches = more computation
+#    vit_embed_dim: 384
+#    vit_depth: 6
+#    vit_num_heads: 6
+#    vit_mlp_ratio: 4.0
+#    Parameters: ~25M
+#
+# 4. DEEP ViT (More layers for complex patterns):
+#    vit_patch_size: 16
+#    vit_embed_dim: 512
+#    vit_depth: 12
+#    vit_num_heads: 8
+#    vit_mlp_ratio: 4.0
+#    Parameters: ~50M
+#
+# PARAMETER GUIDELINES:
+# - vit_patch_size: Smaller = more detail but more computation (8, 16, 32)
+# - vit_embed_dim: Higher = more capacity but more memory (256, 384, 512, 768)
+# - vit_depth: More layers = deeper network but slower (4, 6, 8, 12)
+# - vit_num_heads: Must divide vit_embed_dim evenly (4, 6, 8, 12)
+# - vit_mlp_ratio: Higher = more non-linearity (2.0, 4.0, 8.0)
+# - vit_use_cls_token: true for classification-like, false for dense prediction
+#
+# TRAINING TIPS:
+# - Start with dropout=0.1 and adjust based on overfitting
+# - Use weight_decay=0.05 for better generalization
+# - ViT benefits from longer training and warmup
+# - Monitor validation loss to detect overfitting early
+# - Reduce batch_size if you run out of GPU memory
+#
+# PERFORMANCE vs EFFICIENCY TRADE-OFFS:
+# - Smaller patches: Better detail but 4x computation (16→8)
+# - Higher embed_dim: More capacity but quadratic memory increase
+# - More layers: Better abstraction but linear slowdown
+# - More heads: Better attention patterns but more computation

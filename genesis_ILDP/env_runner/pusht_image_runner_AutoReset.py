@@ -92,13 +92,9 @@ class PushTImageRunner(BaseImageRunner):
         self.info = None
         self.done_ratio = done_ratio
 
-        # Initialize video manager with configurable directory
         if video_dir is None:
-            try:
-                video_dir = target_folder1  # Fallback to config default
-            except NameError:
-                video_dir = output_dir  # Ultimate fallback to output_dir
-
+            video_dir = output_dir  
+                    
         self.video_manager = VideoManager(
             base_video_path=video_dir,
             n_train=n_train,
@@ -475,10 +471,8 @@ class PushTImageRunner(BaseImageRunner):
 
     def _manual_reset_env(self, envs_idx, info):
         """
-        Manually reset the T-pose for a stagnant environment.
-
-        Args:
-            env_idx: Environment index to reset
+        Manually reset the T-pose for a stagnant environment, and return the corresponding new obs 
+        when resetting the specific env. 
         """
 
         # set them back to homepos which might be far away from the cur_pos(or change into four corners version with better ? check )  
@@ -494,11 +488,12 @@ class PushTImageRunner(BaseImageRunner):
             dofs_idx_local=self.env.robot_dofs_idx[0:7],
         )
 
-        # Clear histories for this env after reset
+        _, reset_image, reset_agent_pos = self.env._get_cur_obs(envs_idx=envs_idx)
         self.agent_pos_history[envs_idx].clear()
         self.object_pose_history[envs_idx].clear()
 
         print(f"[Manual Assistant] Env {envs_idx} reset due to stagnation")
+        return reset_image, reset_agent_pos
 
     def _process_info(self, obs, reward, info, env_status, final_saving=False):
         """Process environment info and rewards.
@@ -531,11 +526,14 @@ class PushTImageRunner(BaseImageRunner):
                     )
 
                     if is_stagnant:
-                        # Mark for manual reset, do NOT add to active envs (action ignored)
+                        # Mark for manual reset, still add to active envs 
+                        # reset the original obs_dict observation after resetting them to the home_pos
                         manual_reset_indices.append(i)
-                        self._manual_reset_env(i, info)
-                    else:
-                        active_env_indices.append(i)
+                        reset_img, reset_agent_pos = self._manual_reset_env(i, info)
+                        obs['image'] = reset_img
+                        obs['agent_pos'] = reset_agent_pos
+
+                    active_env_indices.append(i)
                 else:
                     active_env_indices.append(i)
 

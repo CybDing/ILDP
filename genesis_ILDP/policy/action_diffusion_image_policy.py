@@ -6,38 +6,45 @@ import tqdm
 import genesis as gs
 from typing import Union
 
-from genesis_ILDP.model.conditioned_unet import Unet
-from genesis_ILDP.model.encoding import img_encoding_cnn, time_encoding, pos_encoding, merge_multimodal_encoding
+from genesis_ILDP.model.diffusion.conditioned_unet import Unet
+from genesis_ILDP.model.encoding import time_encoding, pos_encoding, merge_multimodal_encoding
 from genesis_ILDP.policy.base_image_policy import BaseImagePolicy
 from genesis_ILDP.utils.cuda import to_torch
 from genesis_ILDP.dataset.pusht_image_dataset import PushTImageDataset
-from genesis_ILDP.model.common.Scheduler import NoiseScheduler
+from genesis_ILDP.model.common.scheduler import NoiseScheduler
+from genesis_ILDP.model.vision.cnn_encoding import img_encoding_cnn
 
 from diffusion_policy.model.common.normalizer import LinearNormalizer
 from diffusion_policy.model.vision.crop_randomizer import CropRandomizer
+
 
 class ActionDiffusionImagePolicy(BaseImagePolicy):
        
     def __init__(self,
                  shape_meta: dict,
-                 normalizer: LinearNormalizer = None,
+                 cropper: CropRandomizer, 
+                 pos_encoding: pos_encoding, 
+                 time_encoding: time_encoding, 
+                 imgs_encoding_net: img_encoding_cnn, 
+                 conditioned_unet: Unet, 
+                 noise_scheduler: NoiseScheduler,  
+                 normalizer: LinearNormalizer, 
+                
                  diff_steps: int = 100,
                  obs_steps: int = 2,
                  horizon: int = 16,
                  n_action_steps: int = 8,
                  n_obs_steps: int = 2,
-
+                
+                 noise_intensity: float = 1.0,  
+                 
                  use_ddpm = True, 
-                 ddim_steps: int = None,  # Number of DDIM steps (if None, auto-calculate)
-                 noise_intensity: float = 1.0,  # DDIM noise intensity
-                 variance_threshold = 10,
+                 ddim_steps: int = None,  
 
-                 cropper = cropper, 
-                 pos_encoding: pos_encoding, 
-                 time_encoding: time_encoding, 
-                 imgs_encoding_net: img_encoding_cnn, 
-                 conditioned_unet: Unet, 
-                 noise_scheduler: NoiseScheduler # note: "device" should be configured to make the tensor inside is stored in the right device
+                 randn_clip_value: float | tuple | None = 5.0, 
+                 denoised_clip_value: float | tuple | None = 10.0,
+                 action_clip_value: float | tuple | None = None, 
+
                  **kwargs):
         super().__init__()
         
@@ -57,10 +64,11 @@ class ActionDiffusionImagePolicy(BaseImagePolicy):
         self.n_obs_steps = n_obs_steps
         self.ddim_steps = ddim_steps
         self.noise_intensity = noise_intensity
-        self.enable_crop = enable_crop
-        self.crop_shape = crop_shape
+        self.use_ddpm = use_ddpm
 
-        self.variance_threshold = variance_threshold
+        self.randn_clip_value = randn_clip_value
+        self.denoised_clip_value = denoised_clip_value
+        self.action_clip_value = action_clip_value
 
         self.cropper = cropper
         if cropper is None: self.enable_crop = False
@@ -79,8 +87,8 @@ class ActionDiffusionImagePolicy(BaseImagePolicy):
         else: self.encode_agent_pos = True
 
         self.betas, self.cum_alphas = noise_scheduler.get_scheduler_values(self.diff_steps)
-        self.register_buffer('betas', betas)
-        self.register_buffer('cum_alphas', cum_alphas)
+        self.register_buffer('betas', self.betas)
+        self.register_buffer('cum_alphas', self.cum_alphas)
 
         self.traj_shape = (horizon, self.action_dim)
         
@@ -93,24 +101,48 @@ class ActionDiffusionImagePolicy(BaseImagePolicy):
         print(f"- Horizon: {horizon}")
         print(f"- Diffusion steps: {diff_steps}")
         print(f"- Observation steps: {obs_steps}")
+        print(f"- Clip settings: randn={self.randn_clip_value}, denoised={self.denoised_clip_value}, action={self.action_clip_value}")
 
+    # --------------------
+    # Helper clamp methods
+    # --------------------
+    def _clip_tensor(self, x: torch.Tensor, clip_value):
+        """Clamp tensor x by clip_value if provided.
+        - If clip_value is a scalar (float/int): clamp to [-clip_value, +clip_value]
+        - If clip_value is a tuple/list of (min, max): clamp to [min, max]
+        - If clip_value is None: return x unchanged
+        """
+        if clip_value is None:
+            return x
+        if isinstance(clip_value, (tuple, list)) and len(clip_value) == 2:
+            min_v, max_v = clip_value
+            return torch.clamp(x, min=min_v, max=max_v)
+        try:
+            v = float(clip_value)
+        except Exception:
+            return x
+        return torch.clamp(x, min=-v, max=v)
+
+    def _get_action_clip_bounds(self, device, dtype):
+        """Expect action_clip_value as (min_list, max_list), each length == action_dim.
+        Returns tensors shaped (1, 1, Da) for broadcasting.
+        """
+        v = self.action_clip_value
+        if v is None:
+            return None, None
+        if not (isinstance(v, (tuple, list)) and len(v) == 2):
+            raise ValueError("action_clip_value must be (min_list, max_list)")
+        min_list, max_list = v
+        Da = self.action_dim
+        min_arr = torch.as_tensor(min_list, device=device, dtype=dtype)
+        max_arr = torch.as_tensor(max_list, device=device, dtype=dtype)
+        if min_arr.numel() != Da or max_arr.numel() != Da:
+            raise ValueError(f"Length of min/max must equal action_dim={Da}, got {min_arr.numel()}/{max_arr.numel()}")
+        return min_arr.view(1, 1, Da), max_arr.view(1, 1, Da)
 
     def _apply_crop(self, images: torch.Tensor, training: bool = True) -> torch.Tensor:
-        """
-        Apply cropping to images if enabled.
-
-        Args:
-            images: Input images tensor of shape (B, C, H, W)
-            training: If True, apply random cropping. If False, apply center cropping.
-
-        Returns:
-            Cropped images tensor of shape (B, C, crop_height, crop_width)
-        """
         if not self.enable_crop or self.cropper is None:
             return images
-
-        if hasattr(self.cropper, 'to'):
-            self.cropper = self.cropper.to(images.device)
 
         if training:
             self.cropper.train()  
@@ -118,38 +150,54 @@ class ActionDiffusionImagePolicy(BaseImagePolicy):
             self.cropper.eval()  
 
         cropped_images = self.cropper(images)
-
         return cropped_images
+    
+    def _preprocess_obs(self, imgs, agent_pos):
+        # Reorder to channels-first if needed: [B, T, H, W, C] -> [B, T, C, H, W]
+        if len(imgs.shape) == 5 and imgs.shape[-1] == 3:
+            imgs = imgs.permute(0, 1, 4, 2, 3)
+        elif len(imgs.shape) != 5:
+            print(f"[ActionDiffusionImagePolicy] WARNING: unexpected image tensor shape: {imgs.shape} (expected 5D)")
+
+        # Enforce n_obs_steps length consistently on both modalities
+        if imgs.shape[1] > self.n_obs_steps:
+            imgs = imgs[:, :self.n_obs_steps]
+            print('[ActionDiffusionImagePolicy] Warning: trimming images to n_obs_steps')
+        if agent_pos.shape[1] > self.n_obs_steps:
+            agent_pos = agent_pos[:, :self.n_obs_steps]
+            print('[ActionDiffusionImagePolicy] Warning: trimming agent_pos to n_obs_steps')
+        if imgs.shape[1] < self.n_obs_steps or agent_pos.shape[1] < self.n_obs_steps:
+            raise ValueError("[ActionDiffusionImagePolicy] Error! obs steps smaller than n_obs_steps; cannot predict actions")
+        
+        return imgs, agent_pos
+    
+    def _encoding_obs(self, img, agent_pos, training = True) -> tuple:
+        batch_size = img.shape[0]
+        # 1. concatenate the img and agent_pos over the first dim(batch dim)
+        img = img.reshape(-1, *img.shape[-3:])
+        agent_pos = agent_pos.reshape(-1, agent_pos.shape[-1])
+        # 2. apply the img cropping 
+        img = self._apply_crop(img, training=training) # training visual encoder use random crop 
+        # 3. apply the encoding network to the obs
+        img_encoded = self.imgs_encoding_net(img)
+        if self.encode_agent_pos: 
+            agent_pos_encoded = self.pos_encoding(agent_pos)
+        else: agent_pos_encoded = agent_pos
+        # 4. stack n_obs_steps encodings together(over the first dim to form feature vectors)
+        img_feature = img_encoded.reshape(batch_size, -1)
+        agent_pos_feature = agent_pos_encoded.reshape(batch_size, -1)
+
+        return img_feature, agent_pos_feature
 
     def predict_action(self, obs_dict: Dict[str, torch.Tensor], recording_diffusion=False) -> Dict[str, torch.Tensor]:
         """
         Predict actions given observations.
         """
-        # Normalize observations like in training.
-        # 1) Ensure channels-first before normalization if needed.
         imgs = obs_dict['image']
         agent_pos = obs_dict['agent_pos']
 
-        if len(imgs.shape) == 5 and imgs.shape[-1] == 3:
-            print(f"Converting image dimensions from {imgs.shape} to channels-first format")
-            imgs = imgs.permute(0, 1, 4, 2, 3)  # [B, T, H, W, C] -> [B, T, C, H, W]
-            print(f"After conversion: {imgs.shape}")
-        elif len(imgs.shape) == 4:
-            print(f"WARNING: Unexpected 4D image tensor: {imgs.shape}")
-            print(f"Expected 5D: [batch, time, height, width, channels] but got 4D")
-            print("This suggests missing width dimension in environment observation!")
-        else:
-            print(f"WARNING: Unexpected image tensor shape: {imgs.shape} (expected 5D)")
+        imgs, agent_pos = self._preprocess_obs(imgs, agent_pos)
 
-        if imgs.shape[1] > self.n_obs_steps:
-            imgs = imgs[:, :self.n_obs_steps]
-            print('[action_diffusion_policy] Warning: Input to policy for predicting action shape does not match with n_obs_steps')
-        if agent_pos.shape[1] > self.n_obs_steps:
-            agent_pos = agent_pos[:, :self.n_obs_steps]
-        elif imgs.shape[1] < self.n_obs_steps or imgs.shape[1] < self.n_obs_steps:
-            raise ValueError("[action diffusion policy] Error! Input shape obs steps smaller than set n_obs_steps, could not predict actions")
-
-        # 3) Normalize on the current device
         device = next(self.parameters()).device
         nobs = self.normalizer.normalize({
             'image': imgs.to(device),
@@ -160,18 +208,15 @@ class ActionDiffusionImagePolicy(BaseImagePolicy):
         nagent_pos = nobs['agent_pos']
         batch_size = nimgs.shape[0]
 
-        # Use DDIM for faster action generation (sampler returns UNNORMALIZED actions already)
-        # Use configured DDIM parameters if available
-        # ddim_steps = self.ddim_steps if self.ddim_steps is not None else None
-        # noise_intensity = self.noise_intensity if hasattr(self, 'noise_intensity') else 0.0
-
-        # action_pred = self.action_generation_ddim(nimgs, nagent_pos, batch_size,
-        #                                          sample_steps=ddim_steps, noise_intensity=noise_intensity)
-
         if self.use_ddpm: 
             result = self.action_generation_ddpm(nimgs, nagent_pos, batch_size, recording_diffusion)
 
-        else: result = self.action_generation_ddim(nimgs, nagent_pos, batch_size, recording_diffusion)
+        else: 
+            if self.ddim_steps is None: 
+                raise ValueError('ddim steps are not configured for ddim sampling')
+            if self.noise_intensity is None:
+                raise ValueError('noise intensity is not configured for ddim sampling')
+            result = self.action_generation_ddim(nimgs, nagent_pos, batch_size, sample_steps=self.ddim_steps, noise_intensity=self.noise_intensity)
 
         # TODO check whether ddim could record actions
                     
@@ -224,55 +269,44 @@ class ActionDiffusionImagePolicy(BaseImagePolicy):
                 - 'action': Ground truth actions
                 
         """
-        # Input shape here is(B * n_action_steps * (*dim))
-        # Normalize observations and actions separately like diffusion_policy
-        nobs = self.normalizer.normalize(batch['obs'])
-        nactions = self.normalizer['action'].normalize(batch['action'])
+        imgs = batch['obs']['image']
+        agent_pos = batch['obs']['agent_pos']
+        
+        imgs, agent_pos = self._preprocess_obs(imgs, agent_pos)
+        device = next(self.parameters()).device
+        nobs = self.normalizer.normalize({
+            'image': imgs.to(device),
+            'agent_pos': agent_pos.to(device)
+        })
+        nactions = self.normalizer['action'].normalize(batch['action'].to(device))
 
-        imgs = nobs['image']
-        agent_pos = nobs['agent_pos']
+        nimgs = nobs['image']
+        nagent_pos = nobs['agent_pos']
         action = nactions
-
-        # Trim observations to obs_steps if needed
-        if imgs.shape[1] > self.n_obs_steps:
-            imgs = imgs[:, :self.n_obs_steps]
-        if agent_pos.shape[1] > self.n_obs_steps:
-            agent_pos = agent_pos[:, :self.n_obs_steps]
-        
-        batch_size = imgs.shape[0]
-        
-        # Stack observations for encoding
-        imgs_stack = imgs.reshape(-1, *imgs.shape[2:])  # (B*To, C, H, W)
-        agent_pos_stack = agent_pos.reshape(-1, *agent_pos.shape[2:])  # (B*To, 2)
+        batch_size = nimgs.shape[0]
 
         # Sample random timestep and noise
         # Sample timesteps from 1 to diff_steps, then convert to array indices
         random_t = torch.randint(1, self.diff_steps + 1, (batch_size,), device=action.device)
         random_noise = torch.randn_like(action)
+        # Optional: clamp training noise for stability
+        random_noise = self._clip_tensor(random_noise, self.randn_clip_value)
 
-        # Add noise to actions (forward diffusion process)
-        # Convert timesteps to array indices: timestep t uses index t-1
         sqrt_alpha_cumprod = torch.sqrt(self.cum_alphas[random_t - 1]).reshape(batch_size, 1, 1)
         sqrt_one_minus_alpha_cumprod = torch.sqrt(1 - self.cum_alphas[random_t - 1]).reshape(batch_size, 1, 1)
         
         noisy_action = sqrt_alpha_cumprod * action + sqrt_one_minus_alpha_cumprod * random_noise
 
         # Encode observations and time
-        t_encoding = torch.stack([self.time_encoding(t.item()) for t in random_t], dim=0)
-        imgs_cropped = self._apply_crop(imgs_stack, training=True)
-        imgs_encoding = self.imgs_encoding_net(imgs_cropped).reshape(batch_size, -1)
-
-        if self.encode_agent_pos:
-            pos_encoding = self.pos_encoding(agent_pos_stack).reshape(batch_size, -1)
-        else:
-            pos_encoding = agent_pos_stack.reshape(batch_size, -1)  # (B, n_obs_steps * 2)
+        t_encoding = torch.stack([self.time_encoding(t.item()) for t in random_t], dim=0).to(device)
+        imgs_encoding, pos_encoding = self._encoding_obs(nimgs, nagent_pos, training=True)
 
         global_cond = self.merge_multimodal_encoding(imgs_encoding, pos_encoding, t_encoding)
 
         noisy_action_input = noisy_action.transpose(1, 2).contiguous() 
 
         predicted_noise = self.conditioned_unet(noisy_action_input, global_cond)
-        predicted_noise = predicted_noise.transpose(1, 2).contiguous()  # (B, T, Da) - ensure contiguous
+        predicted_noise = predicted_noise.transpose(1, 2).contiguous()  # (B, T, Da)
 
         loss = torch.nn.functional.mse_loss(predicted_noise, random_noise)
         return loss
@@ -286,29 +320,14 @@ class ActionDiffusionImagePolicy(BaseImagePolicy):
         assert imgs_steps == pos_steps == self.n_obs_steps, f"Expected {self.n_obs_steps} obs steps, got imgs: {imgs_steps}, pos: {pos_steps}"
 
         # Prepare observation features
-        imgs_batched = imgs.reshape(-1, *imgs.shape[2:])
-        pos_batched = agent_pos.reshape(-1, *agent_pos.shape[2:])
-
-        # Apply cropping before vision encoding (inference mode)
-        imgs_cropped = self._apply_crop(imgs_batched, training=False)
-        imgs_features_batched = self.imgs_encoding_net(imgs_cropped)
-
-        if self.encode_agent_pos:
-            pos_features_batched = self.pos_encoding(pos_batched)
-        else:
-            pos_features_batched = pos_batched  
-
-        imgs_features = imgs_features_batched.reshape(batch_size, -1) # -1 -> imgs_dim * self.n_obs_steps
-
-        pos_features = pos_features_batched.reshape(batch_size, -1)
+        imgs_features, pos_features = self._encoding_obs(imgs, agent_pos, training=False)
 
         predicted_trajs = torch.randn(size=(batch_size, *self.traj_shape), device=imgs.device)
-
-        # betas_device = self.betas.to(imgs.device)
-        # cum_alphas_device = self.cum_alphas.to(imgs.device)
+        # Optional: clamp initial noise sample
+        predicted_trajs = self._clip_tensor(predicted_trajs, self.randn_clip_value)
 
         if recording_diffusion:
-            action_buffer = [predicted_trajs] # which will hold for (B, horizons, Da)           
+            action_buffer = [predicted_trajs.clone()] # snapshot (B, horizons, Da)           
 
         for step_idx, t in enumerate(reversed(range(1, self.diff_steps + 1))):
             # Time encoding
@@ -334,17 +353,18 @@ class ActionDiffusionImagePolicy(BaseImagePolicy):
                 variance = self.betas[t-1] * (1 - self.cum_alphas[t-2]) / (1 - self.cum_alphas[t-1])
 
                 noise = torch.randn_like(predicted_trajs)
-                # clamp the noise intensity ? 
-                
-
+                noise = self._clip_tensor(noise, self.randn_clip_value)
                 predicted_trajs = mean + torch.sqrt(variance) * noise
+                # Optional: clamp denoised intermediate
+                predicted_trajs = self._clip_tensor(predicted_trajs, self.denoised_clip_value)
             else:
                 alpha_t = 1 - self.betas[t-1]  # t=1 uses index 0
                 coeff1 = 1.0 / torch.sqrt(alpha_t)
                 coeff2 = self.betas[t-1] / torch.sqrt(1 - self.cum_alphas[t-1])
                 predicted_trajs = coeff1 * (predicted_trajs - coeff2 * predicted_noise_t)
+                predicted_trajs = self._clip_tensor(predicted_trajs, self.denoised_clip_value)
             if recording_diffusion:
-                action_buffer.append(predicted_trajs)  # append the predicted_trajs
+                action_buffer.append(predicted_trajs.clone())  # append snapshot of predicted_trajs
 
             if torch.isnan(predicted_trajs).any():
                 print(f"  NaN detected in predicted_trajs after DDPM step {step_idx}!")
@@ -354,6 +374,10 @@ class ActionDiffusionImagePolicy(BaseImagePolicy):
         action_dict = {"action": predicted_trajs}
         action_unnormalized = self.normalizer.unnormalize(action_dict)
         predicted_trajs_unnormalized = action_unnormalized["action"]
+        # Optional: clamp final actions in real action space (support per-dim bounds)
+        if self.action_clip_value is not None:
+            amin, amax = self._get_action_clip_bounds(predicted_trajs_unnormalized.device, predicted_trajs_unnormalized.dtype)
+            predicted_trajs_unnormalized = torch.clamp(predicted_trajs_unnormalized, min=amin, max=amax)
 
         # Add constant dimension (0.27) to the end
         # predicted_trajs_unnormalized shape: (batch_size, horizon, action_dim)
@@ -373,9 +397,7 @@ class ActionDiffusionImagePolicy(BaseImagePolicy):
     def action_generation_ddim(self, imgs, agent_pos, batch_size, sample_steps=None, noise_intensity=0.0):
         """DDIM sampling for faster action generation."""
         if sample_steps is None:
-            # Optimal step selection: uniform spacing for better coverage
-            # DDIM uses actual timesteps, which go from 1 to diff_steps
-            num_steps = min(20, max(10, self.diff_steps // 15))  # 10-20 steps
+            num_steps = min(20, max(10, self.diff_steps // 10))  # 10-20 steps
             sample_steps = np.linspace(1, self.diff_steps, num_steps, dtype=int).tolist()
             sample_steps = sorted(set(sample_steps))  # Remove duplicates and ensure sorted
         elif isinstance(sample_steps, int):
@@ -384,24 +406,10 @@ class ActionDiffusionImagePolicy(BaseImagePolicy):
             sample_steps = np.linspace(1, self.diff_steps, num_steps, dtype=int).tolist()
             sample_steps = sorted(set(sample_steps))  # Remove duplicates and ensure sorted
             
-        imgs_batched = imgs.reshape(-1, *imgs.shape[2:])
-        pos_batched = agent_pos.reshape(-1, *agent_pos.shape[2:])
-
-        # Apply cropping before vision encoding (inference mode)
-        imgs_cropped = self._apply_crop(imgs_batched, training=False)
-        imgs_features_batched = self.imgs_encoding_net(imgs_cropped)
-
-        if self.encode_agent_pos:
-            pos_features_batched = self.pos_encoding(pos_batched)
-            pos_features = pos_features_batched.reshape(batch_size, -1)
-        else:
-            # Use raw agent position
-            pos_features_batched = pos_batched  # No encoding, use raw values
-            pos_features = pos_features_batched.reshape(batch_size, -1)
-
-        imgs_features = imgs_features_batched.reshape(batch_size, -1)
+        imgs_features, pos_features = self._encoding_obs(imgs, agent_pos, training=False)
         
         predicted_trajs = torch.randn(size=(batch_size, *self.traj_shape), device=imgs.device)
+        predicted_trajs = self._clip_tensor(predicted_trajs, self.randn_clip_value)
 
         # DDIM reverse process
         for step_idx, i in enumerate(reversed(sample_steps)):
@@ -427,6 +435,8 @@ class ActionDiffusionImagePolicy(BaseImagePolicy):
             sqrt_alpha_cumprod_t = torch.sqrt(alpha_cumprod_t)
             sqrt_one_minus_alpha_cumprod_t = torch.sqrt(1 - alpha_cumprod_t)
             pred_x0 = (predicted_trajs - sqrt_one_minus_alpha_cumprod_t * predicted_noise_t) / sqrt_alpha_cumprod_t
+            # Optional: clamp the denoised estimate
+            pred_x0 = self._clip_tensor(pred_x0, self.denoised_clip_value)
 
             if torch.isnan(pred_x0).any() or step_idx < 5 or i < 10:
                 print(f"  pred_x0 has NaN: {torch.isnan(pred_x0).any()}")
@@ -443,19 +453,21 @@ class ActionDiffusionImagePolicy(BaseImagePolicy):
                 direction_xt = torch.sqrt(1 - alpha_cumprod_prev - noise_factor**2) * predicted_noise_t
 
                 random_noise = torch.randn_like(predicted_trajs) if noise_intensity > 0 else 0
+                if isinstance(random_noise, torch.Tensor):
+                    random_noise = self._clip_tensor(random_noise, self.randn_clip_value)
                 predicted_trajs = torch.sqrt(alpha_cumprod_prev) * pred_x0 + direction_xt + noise_factor * random_noise
+                predicted_trajs = self._clip_tensor(predicted_trajs, self.denoised_clip_value)
             else:
                 # Final step: timestep 1 -> 0, deterministic
                 predicted_trajs = pred_x0
 
-            if torch.isnan(predicted_trajs).any():
-                print(f"  ❌ NaN detected in predicted_trajs after step {step_idx}!")
-                print(f"  Breaking early to prevent propagation...")
-                break
 
         action_dict = {"action": predicted_trajs}
         action_unnormalized = self.normalizer.unnormalize(action_dict)
         predicted_trajs_unnormalized = action_unnormalized["action"]
+        if self.action_clip_value is not None:
+            amin, amax = self._get_action_clip_bounds(predicted_trajs_unnormalized.device, predicted_trajs_unnormalized.dtype)
+            predicted_trajs_unnormalized = torch.clamp(predicted_trajs_unnormalized, min=amin, max=amax)
         
         # Add constant dimension (0.27) to the end
         # predicted_trajs_unnormalized shape: (batch_size, horizon, action_dim)

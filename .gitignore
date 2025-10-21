@@ -60,7 +60,7 @@ backup/
 test*
 debug*
 
-diffusion*
+# diffusion*
 
 EXAMPLE*
 
