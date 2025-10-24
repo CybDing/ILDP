@@ -11,7 +11,7 @@ from genesis_ILDP.model.encoding import time_encoding, pos_encoding, merge_multi
 from genesis_ILDP.policy.base_image_policy import BaseImagePolicy
 from genesis_ILDP.utils.cuda import to_torch
 from genesis_ILDP.dataset.pusht_image_dataset import PushTImageDataset
-from genesis_ILDP.model.common.scheduler import NoiseScheduler
+from genesis_ILDP.model.common.noise_scheduler import NoiseScheduler
 from genesis_ILDP.model.vision.cnn_encoding import img_encoding_cnn
 
 from diffusion_policy.model.common.normalizer import LinearNormalizer
@@ -28,7 +28,7 @@ class ActionDiffusionImagePolicy(BaseImagePolicy):
                  imgs_encoding_net: img_encoding_cnn, 
                  conditioned_unet: Unet, 
                  noise_scheduler: NoiseScheduler,  
-                 normalizer: LinearNormalizer, 
+                 normalizer: LinearNormalizer=None, 
                 
                  diff_steps: int = 100,
                  obs_steps: int = 2,
@@ -87,8 +87,8 @@ class ActionDiffusionImagePolicy(BaseImagePolicy):
         else: self.encode_agent_pos = True
 
         self.betas, self.cum_alphas = noise_scheduler.get_scheduler_values(self.diff_steps)
-        self.register_buffer('betas', self.betas)
-        self.register_buffer('cum_alphas', self.cum_alphas)
+        # self.register_buffer('betas', self.betas)
+        # self.register_buffer('cum_alphas', self.cum_alphas)
 
         self.traj_shape = (horizon, self.action_dim)
         
@@ -140,16 +140,16 @@ class ActionDiffusionImagePolicy(BaseImagePolicy):
             raise ValueError(f"Length of min/max must equal action_dim={Da}, got {min_arr.numel()}/{max_arr.numel()}")
         return min_arr.view(1, 1, Da), max_arr.view(1, 1, Da)
 
-    def _apply_crop(self, images: torch.Tensor, training: bool = True) -> torch.Tensor:
+    def _apply_crop(self, images: torch.Tensor, training: bool = True, generator=None) -> torch.Tensor:
         if not self.enable_crop or self.cropper is None:
             return images
 
         if training:
-            self.cropper.train()  
+            self.cropper.train()
         else:
-            self.cropper.eval()  
+            self.cropper.eval()
 
-        cropped_images = self.cropper(images)
+        cropped_images = self.cropper(images, generator=generator)
         return cropped_images
     
     def _preprocess_obs(self, imgs, agent_pos):
@@ -171,25 +171,24 @@ class ActionDiffusionImagePolicy(BaseImagePolicy):
         
         return imgs, agent_pos
     
-    def _encoding_obs(self, img, agent_pos, training = True) -> tuple:
+    def _encoding_obs(self, img, agent_pos, training=True, generator=None) -> tuple:
         batch_size = img.shape[0]
-        # 1. concatenate the img and agent_pos over the first dim(batch dim)
         img = img.reshape(-1, *img.shape[-3:])
         agent_pos = agent_pos.reshape(-1, agent_pos.shape[-1])
-        # 2. apply the img cropping 
-        img = self._apply_crop(img, training=training) # training visual encoder use random crop 
-        # 3. apply the encoding network to the obs
+
+        img = self._apply_crop(img, training=training, generator=generator)
+
         img_encoded = self.imgs_encoding_net(img)
-        if self.encode_agent_pos: 
+        if self.encode_agent_pos:
             agent_pos_encoded = self.pos_encoding(agent_pos)
         else: agent_pos_encoded = agent_pos
-        # 4. stack n_obs_steps encodings together(over the first dim to form feature vectors)
+
         img_feature = img_encoded.reshape(batch_size, -1)
         agent_pos_feature = agent_pos_encoded.reshape(batch_size, -1)
 
         return img_feature, agent_pos_feature
 
-    def predict_action(self, obs_dict: Dict[str, torch.Tensor], recording_diffusion=False) -> Dict[str, torch.Tensor]:
+    def predict_action(self, obs_dict: Dict[str, torch.Tensor], recording_diffusion=False, generator=None) -> Dict[str, torch.Tensor]:
         """
         Predict actions given observations.
         """
@@ -199,6 +198,13 @@ class ActionDiffusionImagePolicy(BaseImagePolicy):
         imgs, agent_pos = self._preprocess_obs(imgs, agent_pos)
 
         device = next(self.parameters()).device
+
+        # Generator device must match tensor device (MPS/CUDA/CPU)
+        if generator is not None and generator.device != device:
+            new_generator = torch.Generator(device=device)
+            new_generator.set_state(generator.get_state())
+            generator = new_generator
+
         nobs = self.normalizer.normalize({
             'image': imgs.to(device),
             'agent_pos': agent_pos.to(device),
@@ -208,15 +214,15 @@ class ActionDiffusionImagePolicy(BaseImagePolicy):
         nagent_pos = nobs['agent_pos']
         batch_size = nimgs.shape[0]
 
-        if self.use_ddpm: 
-            result = self.action_generation_ddpm(nimgs, nagent_pos, batch_size, recording_diffusion)
+        if self.use_ddpm:
+            result = self.action_generation_ddpm(nimgs, nagent_pos, batch_size, recording_diffusion, generator=generator)
 
-        else: 
-            if self.ddim_steps is None: 
+        else:
+            if self.ddim_steps is None:
                 raise ValueError('ddim steps are not configured for ddim sampling')
             if self.noise_intensity is None:
                 raise ValueError('noise intensity is not configured for ddim sampling')
-            result = self.action_generation_ddim(nimgs, nagent_pos, batch_size, sample_steps=self.ddim_steps, noise_intensity=self.noise_intensity)
+            result = self.action_generation_ddim(nimgs, nagent_pos, batch_size, sample_steps=self.ddim_steps, noise_intensity=self.noise_intensity, generator=generator)
 
         # TODO check whether ddim could record actions
                     
@@ -311,19 +317,16 @@ class ActionDiffusionImagePolicy(BaseImagePolicy):
         loss = torch.nn.functional.mse_loss(predicted_noise, random_noise)
         return loss
     
-    def action_generation_ddpm(self, imgs, agent_pos, batch_size, recording_diffusion = False)\
+    def action_generation_ddpm(self, imgs, agent_pos, batch_size, recording_diffusion=False, generator=None)\
         -> Union[torch.Tensor, tuple]:
         """DDPM sampling for action generation."""
-        # Validate input shapes
         imgs_steps = imgs.shape[1]
         pos_steps = agent_pos.shape[1]
         assert imgs_steps == pos_steps == self.n_obs_steps, f"Expected {self.n_obs_steps} obs steps, got imgs: {imgs_steps}, pos: {pos_steps}"
 
-        # Prepare observation features
-        imgs_features, pos_features = self._encoding_obs(imgs, agent_pos, training=False)
+        imgs_features, pos_features = self._encoding_obs(imgs, agent_pos, training=False, generator=generator)
 
-        predicted_trajs = torch.randn(size=(batch_size, *self.traj_shape), device=imgs.device)
-        # Optional: clamp initial noise sample
+        predicted_trajs = torch.randn(size=(batch_size, *self.traj_shape), device=imgs.device, generator=generator)
         predicted_trajs = self._clip_tensor(predicted_trajs, self.randn_clip_value)
 
         if recording_diffusion:
@@ -342,20 +345,16 @@ class ActionDiffusionImagePolicy(BaseImagePolicy):
             predicted_noise_t = predicted_noise.transpose(1, 2).contiguous()  # (B, T, Da)
 
             if t > 1:
-                # Standard DDPM update
-                # Timestep t uses array index t-1
                 alpha_t = 1 - self.betas[t-1]
                 coeff1 = 1.0 / torch.sqrt(alpha_t)
                 coeff2 = self.betas[t-1] / torch.sqrt(1 - self.cum_alphas[t-1])
                 mean = coeff1 * (predicted_trajs - coeff2 * predicted_noise_t)
 
-                # Variance calculation: cum_alphas at timestep t-1 and t-2
                 variance = self.betas[t-1] * (1 - self.cum_alphas[t-2]) / (1 - self.cum_alphas[t-1])
 
-                noise = torch.randn_like(predicted_trajs)
+                noise = torch.randn_like(predicted_trajs, generator=generator)
                 noise = self._clip_tensor(noise, self.randn_clip_value)
                 predicted_trajs = mean + torch.sqrt(variance) * noise
-                # Optional: clamp denoised intermediate
                 predicted_trajs = self._clip_tensor(predicted_trajs, self.denoised_clip_value)
             else:
                 alpha_t = 1 - self.betas[t-1]  # t=1 uses index 0
@@ -394,21 +393,20 @@ class ActionDiffusionImagePolicy(BaseImagePolicy):
             # (diff_steps + 1, cur_envs, horizons, Da) -> (cur_envs, diff_steps + 1, horizons, Da)
             return (predicted_trajs_with_const, action_diffusion_buffer)
     
-    def action_generation_ddim(self, imgs, agent_pos, batch_size, sample_steps=None, noise_intensity=0.0):
+    def action_generation_ddim(self, imgs, agent_pos, batch_size, sample_steps=None, noise_intensity=0.0, generator=None):
         """DDIM sampling for faster action generation."""
         if sample_steps is None:
-            num_steps = min(20, max(10, self.diff_steps // 10))  # 10-20 steps
+            num_steps = min(20, max(10, self.diff_steps // 10))
             sample_steps = np.linspace(1, self.diff_steps, num_steps, dtype=int).tolist()
-            sample_steps = sorted(set(sample_steps))  # Remove duplicates and ensure sorted
+            sample_steps = sorted(set(sample_steps))
         elif isinstance(sample_steps, int):
-            # If integer provided, create that many evenly spaced steps
             num_steps = min(sample_steps, self.diff_steps)
             sample_steps = np.linspace(1, self.diff_steps, num_steps, dtype=int).tolist()
-            sample_steps = sorted(set(sample_steps))  # Remove duplicates and ensure sorted
-            
-        imgs_features, pos_features = self._encoding_obs(imgs, agent_pos, training=False)
-        
-        predicted_trajs = torch.randn(size=(batch_size, *self.traj_shape), device=imgs.device)
+            sample_steps = sorted(set(sample_steps))
+
+        imgs_features, pos_features = self._encoding_obs(imgs, agent_pos, training=False, generator=generator)
+
+        predicted_trajs = torch.randn(size=(batch_size, *self.traj_shape), device=imgs.device, generator=generator)
         predicted_trajs = self._clip_tensor(predicted_trajs, self.randn_clip_value)
 
         # DDIM reverse process
@@ -442,7 +440,7 @@ class ActionDiffusionImagePolicy(BaseImagePolicy):
                 print(f"  pred_x0 has NaN: {torch.isnan(pred_x0).any()}")
                 print(f"  pred_x0 range: [{pred_x0.min().item():.3f}, {pred_x0.max().item():.3f}]")
 
-            if i > 1:  # Not the final step (timestep 1)
+            if i > 1:
                 ratio_term = (1 - alpha_cumprod_t) * (alpha_cumprod_prev / alpha_cumprod_t)
                 sqrt_term = 1 - alpha_cumprod_prev - ratio_term
 
@@ -452,13 +450,12 @@ class ActionDiffusionImagePolicy(BaseImagePolicy):
                 noise_factor = noise_intensity * torch.sqrt(torch.clamp(sqrt_term, min=0.0))
                 direction_xt = torch.sqrt(1 - alpha_cumprod_prev - noise_factor**2) * predicted_noise_t
 
-                random_noise = torch.randn_like(predicted_trajs) if noise_intensity > 0 else 0
+                random_noise = torch.randn_like(predicted_trajs, generator=generator) if noise_intensity > 0 else 0
                 if isinstance(random_noise, torch.Tensor):
                     random_noise = self._clip_tensor(random_noise, self.randn_clip_value)
                 predicted_trajs = torch.sqrt(alpha_cumprod_prev) * pred_x0 + direction_xt + noise_factor * random_noise
                 predicted_trajs = self._clip_tensor(predicted_trajs, self.denoised_clip_value)
             else:
-                # Final step: timestep 1 -> 0, deterministic
                 predicted_trajs = pred_x0
 
 

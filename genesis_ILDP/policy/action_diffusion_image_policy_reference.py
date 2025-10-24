@@ -1,12 +1,3 @@
-"""
-Reference Policy Wrapper for DiffusionUnetImagePolicy
-
-This wrapper uses the ORIGINAL DiffusionUnetImagePolicy from diffusion_policy library
-to test if the custom implementation is weak or if the environment/dataset is the issue.
-
-Purpose: Diagnostic testing - compare reference implementation vs custom implementation
-"""
-
 from typing import Dict
 import torch
 import torch.nn as nn
@@ -20,12 +11,6 @@ from genesis_ILDP.policy.base_image_policy import BaseImagePolicy
 
 
 class ActionDiffusionImagePolicyReference(BaseImagePolicy):
-    """
-    Wrapper around the reference DiffusionUnetImagePolicy from diffusion_policy library.
-
-    This allows us to test the reference implementation on the Genesis PushT environment
-    to determine if performance issues are due to the custom implementation or env/dataset.
-    """
 
     def __init__(self,
                  shape_meta: dict,
@@ -76,12 +61,10 @@ class ActionDiffusionImagePolicyReference(BaseImagePolicy):
         # === Create vision encoder (MultiImageObsEncoder) ===
         # This matches the reference implementation's vision encoder setup
 
-        # Create ResNet18 backbone
         if vision_backbone == 'resnet18':
             # Use ResNet18 with optional pretrained weights
             try:
                 from torchvision.models import ResNet18_Weights
-                # Use DEFAULT weights which automatically picks the best available version
                 weights = ResNet18_Weights.DEFAULT if vision_pretrained else None
                 rgb_model = torchvision.models.resnet18(weights=weights)
             except (ImportError, AttributeError):
@@ -120,7 +103,7 @@ class ActionDiffusionImagePolicyReference(BaseImagePolicy):
             beta_end=beta_end,
             prediction_type=prediction_type,
             clip_sample=clip_sample,
-            variance_type=variance_type,  # IMPORTANT: Use fixed_small to avoid NaN issues
+            variance_type=variance_type,  
         )
 
         # === Create reference DiffusionUnetImagePolicy ===
@@ -138,17 +121,37 @@ class ActionDiffusionImagePolicyReference(BaseImagePolicy):
             kernel_size=kernel_size,
             n_groups=n_groups,
             cond_predict_scale=cond_predict_scale,
-            **kwargs  # Pass through additional parameters (e.g., for scheduler.step)
+            **kwargs  
         )
 
         # Create normalizer (will be set by training workspace)
         self.normalizer = LinearNormalizer()
 
+        # Store imagenet_norm flag for later use in set_normalizer
+        self.imagenet_norm = imagenet_norm
+
     def set_normalizer(self, normalizer: LinearNormalizer):
-        """Set normalizer from training workspace"""
-        self.normalizer.load_state_dict(normalizer.state_dict())
-        # Also set normalizer for the reference policy
-        self.reference_policy.set_normalizer(normalizer)
+        """
+        Set normalizer from training workspace.
+
+        IMPORTANT: When imagenet_norm=True, skip image normalization to avoid
+        double normalization (ImageNet expects [0,1], not [-1,1]).
+        """
+        if self.imagenet_norm:
+            # Remove image normalizer - keep images in [0,1] for ImageNet norm
+            modified_normalizer = LinearNormalizer()
+            modified_normalizer.load_state_dict(normalizer.state_dict())
+
+            # Remove 'image' key if it exists
+            if 'image' in modified_normalizer.params_dict:
+                del modified_normalizer.params_dict['image']
+
+            self.normalizer.load_state_dict(modified_normalizer.state_dict())
+            self.reference_policy.set_normalizer(modified_normalizer)
+        else:
+            # Use normalizer as-is (with image range normalization)
+            self.normalizer.load_state_dict(normalizer.state_dict())
+            self.reference_policy.set_normalizer(normalizer)
 
     def compute_loss(self, batch):
         """
@@ -156,25 +159,24 @@ class ActionDiffusionImagePolicyReference(BaseImagePolicy):
 
         Args:
             batch: Dictionary with 'obs' and 'action' keys
-                   obs['image']: (B, T, C, H, W)
+                   obs['image']: (B, T, C, H, W) in [0, 1] range (raw from dataset)
                    obs['agent_pos']: (B, T, 2)
-                   action: (B, T, 2)
+                   action: (B, T, 2) unnormalized
 
         Returns:
             loss: Scalar tensor
         """
-        # The reference policy expects the same format as our custom implementation
-        # Just delegate to the reference policy
         return self.reference_policy.compute_loss(batch)
 
-    def predict_action(self, obs_dict: Dict[str, torch.Tensor]) -> Dict[str, torch.Tensor]:
+    def predict_action(self, obs_dict: Dict[str, torch.Tensor], generator=None, **kwargs) -> Dict[str, torch.Tensor]:
         """
         Predict action using reference policy.
 
         Args:
             obs_dict: Dictionary with 'image' and 'agent_pos' keys
-                      During training/validation: (B, T, C, H, W) normalized
-                      During rollout: (B, T, H, W, C) or (B, T, C, H, W) raw
+                      image: (B, T, C, H, W), the img from the real env is not normalized, so we normalize the img inside the predict_action function call 
+                      agent_pos: (B, T, 2)
+            generator: Optional torch.Generator for reproducible sampling
 
         Returns:
             Dictionary with 'action' key containing predicted actions
@@ -182,28 +184,26 @@ class ActionDiffusionImagePolicyReference(BaseImagePolicy):
         """
         device = self.device
 
-        # Get raw observations
         imgs = obs_dict['image']
         agent_pos = obs_dict['agent_pos']
 
-        # Handle dimension conversion for rollout: [B, T, H, W, C] -> [B, T, C, H, W]
         if len(imgs.shape) == 5 and imgs.shape[-1] == 3:
             imgs = imgs.permute(0, 1, 4, 2, 3)
 
-        # Trim observations to n_obs_steps if needed (during rollout we might get full horizon)
         if imgs.shape[1] > self.n_obs_steps:
             imgs = imgs[:, :self.n_obs_steps]
         if agent_pos.shape[1] > self.n_obs_steps:
             agent_pos = agent_pos[:, :self.n_obs_steps]
 
-        # Create observation dictionary for reference policy
-        nobs_dict = {
+        if imgs.max() > 1.0:
+            imgs = imgs / 255.0
+        
+        obs_dict = {
             'image': imgs,
             'agent_pos': agent_pos
         }
-
-        # Call reference policy's predict_action
-        result = self.reference_policy.predict_action(nobs_dict)
+        # nobs_dict = self.normalizer.normalize(obs_dict) # normalize the obs before passing to the policy for predicting the action 
+        result = self.reference_policy.predict_action(obs_dict, generator=generator) # the obs will be normalized inside the policy itself
 
         # Extract predicted action (B, n_action_steps, 2)
         action_pred = result['action']

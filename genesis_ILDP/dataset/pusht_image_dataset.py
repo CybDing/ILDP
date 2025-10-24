@@ -62,14 +62,15 @@ class PushTImageDataset(BaseImageDataset):
         val_set.train_mask = ~self.train_mask
         return val_set
 
-    def get_normalizer(self, mode='limits', **kwargs):
+    def get_normalizer(self, mode='limits', use_image_normalizer=True, **kwargs):
         data = {
             'action': self.replay_buffer['action'],
             'agent_pos': self.replay_buffer['state'][...,:2]
         }
         normalizer = LinearNormalizer()
         normalizer.fit(data=data, last_n_dims=1, mode=mode, **kwargs)
-        normalizer['image'] = get_image_range_normalizer()
+        if use_image_normalizer:
+            normalizer['image'] = get_image_range_normalizer()
         return normalizer
 
     def __len__(self) -> int:
@@ -170,9 +171,9 @@ def test():
 
     zarr_path = '../data/train_data/pusht/pusht_test_0919_3.zarr'
     zarr_path = '../data/train_data/pusht/pusht_train_0920.zarr'
-    zarr_path = '../data/train_data/pusht/merged_data_0925.zarr' 
-    zarr_path = '../data/train_data/pusht/pusht_cchi_v7_replay.zarr'
     zarr_path = '../data/train_data/pusht/genesis_data_20251019_151046.zarr' 
+    zarr_path = '../data/train_data/pusht/pusht_cchi_v7_replay.zarr'
+    zarr_path = '../data/train_data/pusht/merged_data_0925.zarr' 
     
     dataset = PushTImageDataset(zarr_path, horizon=16)
     print("Total sequences stored in Replay buffer: ", len(dataset))
@@ -181,7 +182,7 @@ def test():
 
     print("action sequence:  ", dataset.__getitem__(10)['action'])
     # print("agent_pos sequence:  ", dataset.__getitem__(0)['obs']['agent_pos'])
-    print("imgs dim: ", dataset.__getitem__(0)['obs']['image'].shape)
+    print("imgs dim: ", dataset.__getitem__(0)['obs']['image'])
     normalizer = dataset.get_normalizer(mode='limits')
 
     # print("normalizer stat: \n", normalizer.get_input_stats()['action'], normalizer.get_output_stats())
@@ -192,7 +193,7 @@ def test():
 
     # Add visualization after existing test code
     # print("\nVisualizing images...")
-    visualize_sequence_images(dataset, idx=830, max_frames=16)
+    visualize_sequence_images(dataset, idx=8120, max_frames=16)
     
     # # Display a single frame
     # sample = dataset.__getitem__(-30)

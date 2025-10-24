@@ -19,10 +19,10 @@ from flask import Flask, request, jsonify
 from genesis_ILDP.utils.cuda import *
 from genesis_ILDP.config.env_config import *
 from shapely.geometry import Polygon
-from genesis_ILDP.env.pushT_env_collect import PushTEnv
+from genesis_ILDP.env.pushT_env import PushTEnv
 global reset_requested
 class PushTEnvServer(PushTEnv):
-    def __init__(self, render_size=(96, 96), xlim=0.1, ylim=0.1, seed=None, 
+    def __init__(self, render_size=(224, 224), xlim=0.1, ylim=0.1, seed=None, 
                  model_path=env_path, fps=30, show_fps=False):
         super().__init__(
             render_size=render_size, 
@@ -47,8 +47,8 @@ class PushTEnvServer(PushTEnv):
         if self.render_cache is None:
             self._get_obs(rgb=True, envs_idx=envs_idx)
         
-        print(self.render_cache[0].shape)
-        print(type(self.render_cache[0]))
+        # print(self.render_cache[0].shape)
+        # print(type(self.render_cache[0]))
         data = {
             "timestamp": time.time(),
             # "env_id": 0,
@@ -93,7 +93,7 @@ class PushTEnvServer(PushTEnv):
     def _encode_image(self, img_array):
         try:
             img_np = np.array(img_array)
-            print(img_array.shape)
+            # print(img_array.shape)
             
             if len(img_np.shape) == 3 and img_np.shape[0] == 3:
                 img_np = np.transpose(img_np, (1, 2, 0))
@@ -208,7 +208,7 @@ if __name__ == '__main__':
     print("Flask server should be running now")
     
     env = PushTEnvServer(show_fps=False)
-    env.start(n_envs=1, show_camera=True, show_interact_viewer=False, env_separate=False, seed=[0])
+    env.start(n_envs=1, show_camera=True, show_interact_viewer=True, env_separate=False, seed=[0])
     env.seed(np.arange(1))
     env.reset()
     action_count = 0
@@ -239,8 +239,8 @@ if __name__ == '__main__':
                 pass  # Don't block if client not available
 
             action_tensor = torch.tensor([[*action, 0.27]], dtype=torch.float32)
-            print(f"Step {i}: Executing action {action_count}: {action}")
-            print(action_tensor)
+            # print(f"Step {i}: Executing action {action_count}: {action}")
+            # print(action_tensor)
             env.step(action=action_tensor)
         else:
             env.step()
@@ -249,7 +249,7 @@ if __name__ == '__main__':
         env._publish_keypoints()
         finishing_time = time.time()
         executing_time = finishing_time - current_time
-        print(executing_time)
+        # print(executing_time)
         time_to_wait = 0.1 - executing_time
 
         if i % 50 == 0:

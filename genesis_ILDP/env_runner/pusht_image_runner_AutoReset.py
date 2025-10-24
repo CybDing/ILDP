@@ -471,24 +471,43 @@ class PushTImageRunner(BaseImageRunner):
 
     def _manual_reset_env(self, envs_idx, info):
         """
-        Manually reset the T-pose for a stagnant environment, and return the corresponding new obs 
-        when resetting the specific env. 
-        """
+        Manually reset the T-pose for a stagnant environment, and return the corresponding new obs
+        when resetting the specific env.
 
-        # set them back to homepos which might be far away from the cur_pos(or change into four corners version with better ? check )  
+        Args:
+            envs_idx: int - Index of the environment to reset
+            info: dict - Current info dictionary
+
+        Returns:
+            tuple: (reset_image, reset_agent_pos) with proper n_obs_steps stacking
+        """
+        # Convert envs_idx to tensor for Genesis API
+        envs_idx_tensor = torch.tensor([envs_idx], device=self.device, dtype=torch.int32)
+
+        # Reset robot to home position
+        # Use home_pos[envs_idx] to get this specific env's home position
         self.env.robot.set_dofs_position(
-            envs_idx = envs_idx, 
-            position=self.env.home_pos,
+            envs_idx=envs_idx_tensor,
+            position=self.env.home_pos[envs_idx],
             dofs_idx_local=self.env.robot_dofs_idx[0:7],
         )
 
         self.env.robot.control_dofs_position(
-            envs_idx = envs_idx, 
-            position=self.env.home_pos,
+            envs_idx=envs_idx_tensor,
+            position=self.env.home_pos[envs_idx],
             dofs_idx_local=self.env.robot_dofs_idx[0:7],
         )
 
-        _, reset_image, reset_agent_pos = self.env._get_cur_obs(envs_idx=envs_idx)
+        self.env.env.step() # step one step to prevent the img is not refreshed here ! 
+        result = self.env.env._get_obs(envs_idx=envs_idx_tensor)
+
+        reset_image = result['image'][0]  # Remove batch dim: [H, W, C]
+        reset_agent_pos = result['agent_pos'][0]  # Remove batch dim: [2]
+
+        reset_image = reset_image.unsqueeze(0).repeat(self.n_obs_steps, 1, 1, 1)  # [n_obs_steps, H, W, C]
+        reset_agent_pos = reset_agent_pos.unsqueeze(0).repeat(self.n_obs_steps, 1)  # [n_obs_steps, 2]
+
+        # Clear stagnation detection history
         self.agent_pos_history[envs_idx].clear()
         self.object_pose_history[envs_idx].clear()
 
@@ -509,7 +528,7 @@ class PushTImageRunner(BaseImageRunner):
             self.info = info
 
         active_env_indices = []
-        manual_reset_indices = []  # Track envs needing manual reset
+        reset_obs_dict = {}  # Store reset observations: {env_idx: {'image': tensor, 'agent_pos': tensor}}
 
         for i in range(self.n_envs):
             if reward[i] is None:
@@ -526,16 +545,14 @@ class PushTImageRunner(BaseImageRunner):
                     )
 
                     if is_stagnant:
-                        # Mark for manual reset, still add to active envs 
-                        # reset the original obs_dict observation after resetting them to the home_pos
-                        manual_reset_indices.append(i)
+                        # Get reset observations and store them separately
                         reset_img, reset_agent_pos = self._manual_reset_env(i, info)
-                        obs['image'] = reset_img
-                        obs['agent_pos'] = reset_agent_pos
+                        reset_obs_dict[i] = {
+                            'image': reset_img,
+                            'agent_pos': reset_agent_pos
+                        }
 
-                    active_env_indices.append(i)
-                else:
-                    active_env_indices.append(i)
+                active_env_indices.append(i)
 
             elif env_status[i] == 3:  # Natural success
                 # Record per-env timestep when this environment succeeded
@@ -564,9 +581,13 @@ class PushTImageRunner(BaseImageRunner):
             for key in obs.keys():
                 active_obs = []
                 for i in active_env_indices:
-                    if obs[key][i] is None:
-                        raise ValueError("Obs Saving Error!")
-                    active_obs.append(obs[key][i])
+                    # Check if this env was reset - if so, use reset obs instead of original obs
+                    if i in reset_obs_dict and key in reset_obs_dict[i]:
+                        active_obs.append(reset_obs_dict[i][key])
+                    else:
+                        if obs[key][i] is None:
+                            raise ValueError("Obs Saving Error!")
+                        active_obs.append(obs[key][i])
 
                 if active_obs:
                     new_obs[key] = torch.stack(active_obs, dim=0)

@@ -4,7 +4,7 @@
 <link name="world"/>
 
 <material name="bb">
-    <color rgba="0 0 1 1"/>
+    <color rgba="0.3 0.5 1 1"/>
 </material>
 
 <link name="cubeHL">

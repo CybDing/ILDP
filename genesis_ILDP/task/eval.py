@@ -34,7 +34,7 @@ OmegaConf.register_new_resolver("eval", eval, replace=True)
 @hydra.main(
     version_base=None,
     config_path="../config/eval",
-    config_name="eval_checkpoint_mps"
+    config_name="eval_checkpoint"
 )
 # could use -cn for overriding the config name
 def main(eval_cfg: DictConfig) -> None:
@@ -113,8 +113,19 @@ def main(eval_cfg: DictConfig) -> None:
     print(OmegaConf.to_yaml(runner_config))
 
     env_runner = hydra.utils.instantiate(runner_config)
+
     print("\n=== Starting evaluation ===")
-    runner_log = env_runner.run(policy)
+
+    eval_generator = None
+    if eval_cfg.get('use_generator', True):
+        eval_seed = eval_cfg.get('seed', 42)
+        eval_generator = torch.Generator(device=target_device)
+        eval_generator.manual_seed(eval_seed)
+        print(f"Using generator with seed: {eval_seed}")
+    else:
+        print("Generator disabled - using stochastic sampling")
+
+    runner_log = env_runner.run(policy, generator=eval_generator)
 
     json_log = dict()
     for key, value in runner_log.items():

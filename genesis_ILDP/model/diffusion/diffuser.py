@@ -2,7 +2,7 @@
 
 import torch
 import numpy as np
-from genesis_ILDP.model.common.scheduler import NoiseScheduler
+from genesis_ILDP.model.common.noise_scheduler import NoiseScheduler
 from genesis_ILDP.model.diffusion.conditioned_unet import Unet
 
 class diffuser:

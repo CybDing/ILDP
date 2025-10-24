@@ -201,37 +201,35 @@ class PushTImageRunner(BaseImageRunner):
     def get_saved_trajectories(self, ):
         return self.episode_buffer
 
-    def run(self, policy, wandb_run=None):
+    def run(self, policy, generator=None, wandb_run=None):
         """
         Run evaluation with the given policy and return logging data.
 
         Args:
             policy: Policy to evaluate
+            generator: Optional torch.Generator for reproducible action sampling
             wandb_run: Wandb run object (or None if wandb disabled)
 
         Returns:
             dict: JSON-serializable logging data (videos excluded)
         """
 
-        self._prepare_run()  # Prepare per-run state (not global state!)
+        self._prepare_run()
         self._clean_buffer()
 
-        obs = self.env.reset() # return (n_envs, obs_dict)
+        obs = self.env.reset()
 
         self.past_action = None
-        # policy.reset()  # Reset states for stateful policy
         done = False
 
         pbar = tqdm.tqdm(total=self.max_steps//self.n_action_steps, desc=f"Eval PushTImageRunner",
                              leave=False)
-        
-        if self.enable_render: 
+
+        if self.enable_render:
             self.env.start_recording()
 
-        # envs_remained = self.n_envs
-            
         try:
-            active_envs_idx = list(range(self.n_envs)) # current set up for full active envs for predicting the action
+            active_envs_idx = list(range(self.n_envs))
             is_done = False
             while not is_done:
                 obs_dict = dict(obs)
@@ -240,7 +238,7 @@ class PushTImageRunner(BaseImageRunner):
                     del obs_dict['envs_idx']
 
                 with torch.no_grad():
-                    result = policy.predict_action(obs_dict, recording_diffusion=self.episode_recording)
+                    result = policy.predict_action(obs_dict, recording_diffusion=self.episode_recording, generator=generator)
 
                     if isinstance(result, dict):
                         action_dict = result

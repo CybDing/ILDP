@@ -1,12 +1,11 @@
-if __name__ == "__main__":
-    import sys
-    import pathlib
-    import os
-    ROOT_DIR = str(pathlib.Path(__file__).parent.parent.parent)
-    sys.path.append(ROOT_DIR)
-    os.chdir(ROOT_DIR)
+# if __name__ == "__main__":
+#     ROOT_DIR = str(pathlib.Path(__file__).parent.parent.parent)
+#     sys.path.append(ROOT_DIR)
+#     os.chdir(ROOT_DIR)
 
 import sys
+import pathlib
+import os
 import hydra
 import torch
 from omegaconf import OmegaConf
@@ -47,7 +46,6 @@ def configure_seed(
         torch.cuda.manual_seed_all(seed)
 
     if getattr(torch, "mps", None) is not None and hasattr(torch.backends, "mps") and torch.backends.mps.is_available():
-        # torch.manual_seed already covers MPS tensors, but keep explicit for clarity when available
         if hasattr(torch.mps, "manual_seed"):
             torch.mps.manual_seed(seed)
 
@@ -65,17 +63,15 @@ def configure_seed(
             torch.backends.cudnn.benchmark = True
 
     if generator_device is None:
-        generator_device = "cpu"
+        generator_device = device or "cpu"
 
-    if isinstance(generator_device, torch.device):
-        generator_device_str = str(generator_device)
-    else:
-        generator_device_str = generator_device
-
-    if isinstance(generator_device_str, str) and generator_device_str.startswith("cuda"):
-        generator = torch.Generator(device=generator_device_str)
-    else:
-        generator = torch.Generator()
+    # Make a device-matched Generator (supports cpu, cuda, mps)
+    gen_dev = generator_device if isinstance(generator_device, torch.device) else torch.device(generator_device)
+    try:
+        generator = torch.Generator(device=gen_dev)
+    except TypeError:
+        # Fallback for older PyTorch accepting only device types
+        generator = torch.Generator(device=gen_dev.type if gen_dev.type in ("cuda", "mps") else "cpu")
     generator.manual_seed(seed)
 
     if device is not None and device.type == "cuda" and not torch.cuda.is_available():
@@ -98,7 +94,8 @@ class TrainActionDiffusionImageWorkspace(BaseWorkspace):
         deterministic = bool(cfg.training.get('deterministic', False))
         worker_seed_strategy = cfg.training.get('worker_seed_strategy', 'offset')
 
-        generator_device = device if device.type == 'cuda' else torch.device('cpu')
+        # Use the same device for the DataLoader generator as training (cuda/mps/cpu)
+        generator_device = device
         self.generator = configure_seed(
             seed,
             deterministic,
@@ -174,7 +171,7 @@ class TrainActionDiffusionImageWorkspace(BaseWorkspace):
                 return x.to(device, non_blocking=True)
             return x
         
-        # DataLoader: pin_memory=True requires no generator (CUDA optimization)
+        # DataLoader: attach device-matched generator when shuffling
         if dataloader_kwargs.get('shuffle', False):
             dataloader_kwargs['generator'] = self.generator
 
@@ -349,12 +346,14 @@ class TrainActionDiffusionImageWorkspace(BaseWorkspace):
                     policy = self.ema_model
                 policy.eval()
 
-                # run rollout (only if env_runner is configured)
                 if env_runner is not None and (self.epoch % cfg.training.rollout_every) == 0:
                     try:
                         print(f"Running rollout evaluation at epoch {self.epoch}")
-                        # Pass wandb_run to runner (videos logged separately inside runner)
-                        runner_log = env_runner.run(policy, wandb_run=wandb_run)
+
+                        eval_generator = torch.Generator(device=device)
+                        eval_generator.manual_seed(cfg.training.seed)
+
+                        runner_log = env_runner.run(policy, generator=eval_generator, wandb_run=wandb_run)
                         # runner_log is JSON-safe (no videos), merge into step_log
                         step_log.update(runner_log)
                         print(f"Rollout completed: {list(runner_log.keys())}")
@@ -384,37 +383,28 @@ class TrainActionDiffusionImageWorkspace(BaseWorkspace):
                             step_log['val_loss'] = val_loss
                             print(f"Validation loss: {val_loss:.4f}")
 
-                # run diffusion sampling on a training batch
                 if (self.epoch % cfg.training.sample_every) == 0:
                     with torch.no_grad():
                         try:
-                            # sample trajectory from training set, and evaluate difference
                             batch = dict_apply(train_sampling_batch, lambda x: to_device_safe(x))
                             obs_dict = batch['obs']
                             gt_action = batch['action']
 
-                            # Debug print to understand batch shapes
                             print(f"Full batch shapes - obs image: {obs_dict['image'].shape}, obs agent_pos: {obs_dict['agent_pos'].shape}, gt_action: {gt_action.shape}")
 
-                            # Slice observations to match policy's expected input
-                            # Assume policy expects the first few timesteps for observation
-                            n_obs_steps = getattr(self.model, 'n_obs_steps', 2)  # Default to 2 if not specified
-                            
+                            n_obs_steps = getattr(self.model, 'n_obs_steps', 2)
+
                             obs_dict_sliced = {
-                                'image': obs_dict['image'][:, :n_obs_steps],  # (batch_size, n_obs_steps, ...)
-                                'agent_pos': obs_dict['agent_pos'][:, :n_obs_steps]  # (batch_size, n_obs_steps, ...)
+                                'image': obs_dict['image'][:, :n_obs_steps],
+                                'agent_pos': obs_dict['agent_pos'][:, :n_obs_steps]
                             }
-                            
-                            # For evaluation, use the actions corresponding to the prediction horizon
-                            # Typically this would be the actions after the observation period
-                            # pred_horizon = getattr(self.model, 'horizon', 16)  # Get prediction horizon
-                            # gt_action_sliced = gt_action[:, n_obs_steps:n_obs_steps+pred_horizon]
 
-                            # print(f"Sliced shapes - obs image: {obs_dict_sliced['image'].shape}, obs agent_pos: {obs_dict_sliced['agent_pos'].shape}, gt_action: {gt_action_sliced.shape}")
+                            sample_generator = torch.Generator(device=device)
+                            sample_generator.manual_seed(cfg.training.seed)
 
-                            result = policy.predict_action(obs_dict_sliced)
+                            result = policy.predict_action(obs_dict_sliced, generator=sample_generator)
                             pred_action = result['action_pred']
-                            mse = torch.nn.functional.mse_loss(pred_action[:, :, :2], gt_action)                            
+                            mse = torch.nn.functional.mse_loss(pred_action[:, :, :2], gt_action)
                             step_log['train_action_mse_error'] = mse.item()
                             print(f"Sample MSE: {mse.item():.4f}")
                         except Exception as e:
@@ -461,8 +451,8 @@ class TrainActionDiffusionImageWorkspace(BaseWorkspace):
 
 @hydra.main(
     version_base=None,
-    config_path=str(pathlib.Path(__file__).parent.parent.joinpath("config")),
-    config_name="train_action_diffusion_pusht_image")
+    config_path=str(pathlib.Path(__file__).parent.parent.joinpath("config/train")),
+    config_name="train_action_diffusion_pusht_image_mps")
 def main(cfg):
     workspace = TrainActionDiffusionImageWorkspace(cfg)
     workspace.run()

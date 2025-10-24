@@ -18,9 +18,9 @@ pygame.init()
 
 # Robot workspace bounds (easy to change for different setups)
 WORKSPACE_X_MIN = -0.8  # Minimum x in robot frame (negative)
-WORKSPACE_X_MAX = -0.  # Maximum x in robot frame (negative)
+WORKSPACE_X_MAX = 0.1  # Maximum x in robot frame (negative)
 
-WORKSPACE_Y_MIN = 0.   # Minimum y in robot frame
+WORKSPACE_Y_MIN = -0.1   # Minimum y in robot frame
 WORKSPACE_Y_MAX = 0.8   # Maximum y in robot frame
 
 # Calculate workspace dimensions
@@ -51,12 +51,14 @@ def robot_to_display(robot_x, robot_y):
     Display: flip x to positive for visualization
     """
     # Flip x (from negative to positive) and normalize to [0, 1]
-    display_x = (abs(robot_x) - abs(WORKSPACE_X_MAX)) / WORKSPACE_WIDTH
+    
+    display_x = (-robot_x + WORKSPACE_X_MAX) / WORKSPACE_WIDTH
     display_y = (robot_y - WORKSPACE_Y_MIN) / WORKSPACE_HEIGHT
-
+    print(display_x)
     # Scale to screen size
     screen_x = display_x * SCALE
     screen_y = display_y * SCALE
+    # print(screen_x, screen_y)
     return (screen_x, screen_y)
 
 def display_to_robot(screen_x, screen_y):
@@ -68,7 +70,7 @@ def display_to_robot(screen_x, screen_y):
     norm_y = screen_y / SCALE
 
     # Convert to robot frame (x is negative)
-    robot_x = -(abs(WORKSPACE_X_MAX) + norm_x * WORKSPACE_WIDTH)
+    robot_x = (WORKSPACE_X_MAX - norm_x * WORKSPACE_WIDTH)
     robot_y = WORKSPACE_Y_MIN + norm_y * WORKSPACE_HEIGHT
     return (robot_x, robot_y)
 
@@ -273,6 +275,7 @@ def receive_data():
         if data:
             with data_lock:
                 latest_data.update(data)
+                print(data['agent_pos']) 
             return jsonify({"status": "success"}), 200
     except:
         pass
@@ -315,9 +318,9 @@ def save_buffer(obs_data, mouse_pos, timestamp):
     global action_obs_buffer
 
     with data_lock:  # Thread safety
-        print(f"\n=== save_buffer called with timestamp {timestamp} ===")
-        print(f"obs_data keys: {list(obs_data.keys())}")
-        print(f"obs_data contents: {obs_data}")
+        # print(f"\n=== save_buffer called with timestamp {timestamp} ===")
+        # print(f"obs_data keys: {list(obs_data.keys())}")
+        # print(f"obs_data contents: {obs_data}")
 
         # First check ALL required keys exist
         required_keys = ['cur_keypoints', 'target_keypoints', 'agent_pos', 'intersection_ratio', 'reward', 'image']
@@ -340,7 +343,7 @@ def save_buffer(obs_data, mouse_pos, timestamp):
 
         action_obs_buffer["target_pos"].append(target_pos)
         action_obs_buffer["timestamp"].append(timestamp)
-        print(f"Successfully saved buffer with timestamp {timestamp}")
+        # print(f"Successfully saved buffer with timestamp {timestamp}")
 
 def save_received_action_obs_data():
     global latest_action_receive_buffer
@@ -353,14 +356,14 @@ def save_received_action_obs_data():
                 t_saved = []
                 for t in list(latest_action_receive_buffer["timestamp"]):  # Copy to avoid mutation
                     if t not in action_obs_buffer["timestamp"]:
-                        print(action_obs_buffer["timestamp"])
+                        # print(action_obs_buffer["timestamp"])
                         raise ValueError("saving for executed actions error, action not found in action_obs_buffer!\n" \
                         "Try check the buffer size, and the command latency with the env for help")
                     else:
-                        print(t)
+                        # print(t)
                         # print(action_obs_buffer["timestamp"])
                         t_index = list(action_obs_buffer["timestamp"]).index(t)
-                        print(t_index)
+                        # print(t_index)
                         data_collector.record_timestep(get_dict_slice(action_obs_buffer, t_index))
                         t_saved.append(t)
                         # print("action and obs from real step is being saved")

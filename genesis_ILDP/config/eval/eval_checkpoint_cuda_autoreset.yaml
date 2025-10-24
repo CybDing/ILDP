@@ -1,0 +1,73 @@
+# Evaluation config for PushT AutoReset Runner (CUDA)
+# This config uses the AutoReset runner which automatically resets stagnant environments
+# Usage: python eval.py -cn eval_checkpoint_cuda_autoreset checkpoint_path=/path/to/checkpoint.ckpt
+
+checkpoint_path: ../data/checkpoints/epoch=0250-test_mean_score=4.094.ckpt
+
+output_dir: ../data/eval/autoreset_cuda/  # Output directory for AutoReset eval results
+confirm_overwrite: true  # Ask for confirmation before overwriting existing output
+
+device: cuda:0
+use_ema: true
+
+use_generator: true
+seed: 42
+
+# === HYDRA CONFIGURATION ===
+hydra:
+  run:
+    dir: ${output_dir}  # Use the specified output_dir for Hydra outputs
+
+
+# === AUTORESET RUNNER CONFIGURATION ===
+# Override to use the AutoReset runner instead of the default runner
+env_runner:
+  _target_: genesis_ILDP.env_runner.pusht_image_runner_AutoReset.PushTImageRunner
+  output_dir: ${output_dir}
+
+  # Test configuration
+  n_test: 10
+  n_test_vis: 10
+  test_start_seed: 5000
+
+  # Train configuration (set to 0 for eval-only)
+  n_train: 0
+  n_train_vis: 0
+  train_start_seed: 0
+
+  # Environment parameters
+  max_steps: 300
+  fps: 30
+  device: cuda:0
+  n_envs: null  # Auto-computed from n_train + n_test
+  max_envs_running: 3
+
+  # Observation/Action parameters
+  n_action_steps: 8
+  n_obs_steps: 2
+  enable_past_action: true
+
+  # Rendering
+  enable_render: true
+  video_dir: null  # null = uses output_dir; set to custom path if needed
+  episode_recording: false  # Set true to record trajectories for fine-tuning
+
+  # AutoReset / Manual Assistant parameters
+  enable_manual_assistant: true
+  stagnation_steps: 10  # Number of steps to check for stagnation
+  agent_pos_threshold: 0.01  # Movement threshold for robot (m)
+  object_pos_threshold: 0.005  # Movement threshold for T-block (m)
+
+  # Environment spawn configuration
+  spawn_center: [-0.3, 0.3]
+  spawn_range_scale: 0.65
+  done_ratio: 0.85
+
+
+# === CHECKPOINT CONFIG OVERRIDES ===
+overrides:
+  training:
+    device: cuda:0
+
+  policy:
+    use_time_mlp_encoding: false  # Match model architecture

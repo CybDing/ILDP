@@ -9,6 +9,9 @@ device: cuda:0
 
 use_ema: true
 
+use_generator: true
+seed: 42
+
 # === HYDRA CONFIGURATION ===
 # Set Hydra to use our output_dir
 hydra:
