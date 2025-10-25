@@ -145,7 +145,7 @@ class PushTEnv(gym.Env):
 
         self.robot : gs.engine.entities.RigidEntity = self.scene.add_entity(
             gs.morphs.URDF(
-                pos = (0, 0, 0.3),
+                pos = (0, 0, 0.17),
                 file = self.path['robot'],
                 fixed=True,
                 collision=True,
@@ -187,9 +187,18 @@ class PushTEnv(gym.Env):
         #     fov=65,
         #     GUI=show_camera,
         # )
+        # low level cam view 
+        # self.cam = self.scene.add_camera(
+        #     res=self.render_size,
+        #     pos=(-1, 1, 0.5),
+        #     lookat=(-0.3, 0.3, 0.35),
+        #     fov=65,
+        #     GUI=show_camera,
+        # )
+        # high level cam view
         self.cam = self.scene.add_camera(
             res=self.render_size,
-            pos=(-1, 1, 0.5),
+            pos=(-1.2, 1.2, 1),
             lookat=(-0.3, 0.3, 0.35),
             fov=65,
             GUI=show_camera,

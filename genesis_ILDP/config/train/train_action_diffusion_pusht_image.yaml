@@ -49,22 +49,33 @@ policy:
   # noise_intensity: 0.0         # DDIM noise intensity (0.0=deterministic ddpm)
 
   cropper: # set null to disable cropping
-    _target_: genesis_ILDP.model.common.random_crop.RandomCropper
+    _target_: genesis_ILDP.model.vision.crop_randomizer.CropRandomizer
     input_shape: ${shape_meta.obs.image.shape}
-    crop_shape: [3, 84, 84]
+    crop_height: 84
+    crop_width: 84
     num_crops: 1
     pos_enc: false
-  
+
+  shift_augmenter: null  # set to enable RandomShiftsAug
+    # _target_: genesis_ILDP.model.common.modules.RandomShiftsAug
+    # pad: 10
+
+  pos_shifter: null  # set to enable RandomPosShifter
+    # _target_: genesis_ILDP.model.common.modules.RandomPosShifter
+    # workspace_xlim: [0, 512]
+    # workspace_ylim: [0, 512]
+    # shift_ratio: 0.3
+    # randomness_intensity: 0.5
 
   imgs_encoding_net:
-    _target_: genesis_ILDP.model.encoding.img_encoding_cnn
+    _target_: genesis_ILDP.model.vision.cnn_encoding.img_encoding_cnn
     in_channels: 3
     encoded_dim: 512   # This parameter is IGNORED when using ResNet18!
     backbone: 'resnet18'        # Vision backbone
     pretrained: false           # Set to false for end-to-end training from scratch
     use_spatial_softmax: false
     spatial_softmax_temp: 1.0
-    input_image_shape: ${cropper.crop_shape if cropper is not null else shape_meta.obs.image.shape}
+    input_image_shape: [84, 84]
      # Use cropped shape if cropping enabled, else full image shape
     dropout: 0.0
     # - Without spatial_softmax: outputs 512 (from ResNet18's avgpool)
@@ -78,20 +89,21 @@ policy:
     dropout: 0.0
   
   pos_encoding:
-    _target_: genesis_ILDP.model.encoding.pos_encoding
-    encoded_dim: 128
-    agent_pos_dim: 2
-    dropout: 0.0
+    # _target_: genesis_ILDP.model.encoding.pos_encoding
+    # encoded_dim: 128
+    # agent_pos_dim: 2
+    # dropout: 0.0
+    null
 
-  condition_unet:
-    _target_: genesis_ILDP.model.conditioned_unet.Unet
-    dim_mults: [1, 2, 4, 8]
-    dim_global_features: ${eval:'${policy.imgs_encoding_net.encoded_dim} * ${n_obs_steps} + ${policy.time_encoding_dim} + (${policy.encoded_dim}
-     if ${policy.pos_encoding} is not null else ${policy.pos_encoding.agent_pos_dim}) * ${n_obs_steps}'}
+  conditioned_unet:
+    _target_: genesis_ILDP.model.diffusion.conditioned_unet.Unet
+    # dim_mults: [1, 2, 4, 8]
+    dim_global_features: ${eval:'${policy.imgs_encoding_net.encoded_dim} * ${n_obs_steps} + ${policy.time_encoding.t_emb_dim} + 2 * ${n_obs_steps}'} # 2 stands for the agent_pos_dim 
+    input_dim: 2   
     dropout: 0.0
  
   noise_scheduler:
-    _target_: genesis_ILDP.model.common.Scheduler.NoiseScheduler
+    _target_: genesis_ILDP.model.common.noise_scheduler.NoiseScheduler
     mode: 'cosine'
     device: 'cuda:0'      
   
@@ -103,8 +115,8 @@ task:
   # Dataset configuration
   dataset:
     _target_: genesis_ILDP.dataset.pusht_image_dataset.PushTImageDataset
-    # zarr_path: genesis_ILDP/data/train_data/pusht/pusht_cchi_v7_replay.zarr
-    zarr_path: genesis_ILDP/data/train_data/merged_data_0925.zarr
+    # zarr_path: ../data/train_data/pusht/pusht_cchi_v7_replay.zarr
+    zarr_path: ../data/train_data/pusht/merged_data_0925.zarr
     horizon: ${horizon}
     pad_before: ${eval:'${n_obs_steps}-1'}     # 1
     pad_after: ${eval:'${n_action_steps}-1'}   # 7  
@@ -173,19 +185,19 @@ optimizer:
 # === DATA LOADING ===
 dataloader:
   batch_size: ${training.batch_size}
-  num_workers: 8
-  persistent_workers: true     # Keep workers alive between epochs for better performance
-  pin_memory: true             # Optimized for CUDA
-  prefetch_factor: 2           # Prefetch batches per worker for better GPU utilization
-  shuffle: true
-  drop_last: true              # keep batch sizes consistent across epochs for determinism
+  num_workers: 0
+  # persistent_workers: true     # Keep workers alive between epochs for better performance
+  # pin_memory: true             # Optimized for CUDA
+  # prefetch_factor: 2           # Prefetch batches per worker for better GPU utilization
+  # shuffle: true
+  # drop_last: true              # keep batch sizes consistent across epochs for determinism
 
 val_dataloader:
   batch_size: ${training.batch_size}
-  num_workers: 8
-  persistent_workers: true     # Keep workers alive between epochs for better performance
-  pin_memory: true             # Optimized for CUDA
-  prefetch_factor: 2           # Prefetch batches per worker for better GPU utilization
+  num_workers: 0
+  # persistent_workers: true     # Keep workers alive between epochs for better performance
+  # pin_memory: true             # Optimized for CUDA
+  # prefetch_factor: 2           # Prefetch batches per worker for better GPU utilization
   shuffle: false
 
 # === EMA (Exponential Moving Average) CONFIGURATION ===

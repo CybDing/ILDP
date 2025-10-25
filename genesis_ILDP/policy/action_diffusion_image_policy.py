@@ -13,6 +13,7 @@ from genesis_ILDP.utils.cuda import to_torch
 from genesis_ILDP.dataset.pusht_image_dataset import PushTImageDataset
 from genesis_ILDP.model.common.noise_scheduler import NoiseScheduler
 from genesis_ILDP.model.vision.cnn_encoding import img_encoding_cnn
+from genesis_ILDP.model.common.modules import RandomShiftsAug, RandomPosShifter
 
 from diffusion_policy.model.common.normalizer import LinearNormalizer
 from diffusion_policy.model.vision.crop_randomizer import CropRandomizer
@@ -22,28 +23,31 @@ class ActionDiffusionImagePolicy(BaseImagePolicy):
        
     def __init__(self,
                  shape_meta: dict,
-                 cropper: CropRandomizer, 
-                 pos_encoding: pos_encoding, 
-                 time_encoding: time_encoding, 
-                 imgs_encoding_net: img_encoding_cnn, 
-                 conditioned_unet: Unet, 
-                 noise_scheduler: NoiseScheduler,  
-                 normalizer: LinearNormalizer=None, 
-                
+                 cropper: CropRandomizer,
+                 pos_encoding: pos_encoding,
+                 time_encoding: time_encoding,
+                 imgs_encoding_net: img_encoding_cnn,
+                 conditioned_unet: Unet,
+                 noise_scheduler: NoiseScheduler,
+                 normalizer: LinearNormalizer=None,
+
                  diff_steps: int = 100,
                  obs_steps: int = 2,
                  horizon: int = 16,
                  n_action_steps: int = 8,
                  n_obs_steps: int = 2,
-                
-                 noise_intensity: float = 1.0,  
-                 
-                 use_ddpm = True, 
-                 ddim_steps: int = None,  
 
-                 randn_clip_value: float | tuple | None = 5.0, 
+                 noise_intensity: float = 1.0,
+
+                 use_ddpm = True,
+                 ddim_steps: int = None,
+
+                 randn_clip_value: float | tuple | None = 5.0,
                  denoised_clip_value: float | tuple | None = 10.0,
-                 action_clip_value: float | tuple | None = None, 
+                 action_clip_value: float | tuple | None = None,
+
+                 shift_augmenter: RandomShiftsAug = None,
+                 pos_shifter: RandomPosShifter = None,
 
                  **kwargs):
         super().__init__()
@@ -74,6 +78,9 @@ class ActionDiffusionImagePolicy(BaseImagePolicy):
         if cropper is None: self.enable_crop = False
         else: self.enable_crop = True
 
+        self.shift_augmenter = shift_augmenter
+        self.pos_shifter = pos_shifter
+
         self.imgs_encoding_net = imgs_encoding_net
 
         self.conditioned_unet = conditioned_unet
@@ -86,9 +93,9 @@ class ActionDiffusionImagePolicy(BaseImagePolicy):
         if self.pos_encoding is None: self.encode_agent_pos = False
         else: self.encode_agent_pos = True
 
-        self.betas, self.cum_alphas = noise_scheduler.get_scheduler_values(self.diff_steps)
-        # self.register_buffer('betas', self.betas)
-        # self.register_buffer('cum_alphas', self.cum_alphas)
+        betas, cum_alphas = noise_scheduler.get_scheduler_values(self.diff_steps)
+        self.register_buffer('betas', betas)
+        self.register_buffer('cum_alphas', cum_alphas)
 
         self.traj_shape = (horizon, self.action_dim)
         
@@ -268,23 +275,38 @@ class ActionDiffusionImagePolicy(BaseImagePolicy):
     def compute_loss(self, batch):
         """
         Compute training loss for the diffusion model.
-        
+
         Args:
             batch: Dictionary containing:
                 - 'obs': Dict with 'image' and 'agent_pos'
                 - 'action': Ground truth actions
-                
+
         """
         imgs = batch['obs']['image']
         agent_pos = batch['obs']['agent_pos']
-        
+
         imgs, agent_pos = self._preprocess_obs(imgs, agent_pos)
         device = next(self.parameters()).device
+
+        # Apply augmentations (training only)
+        if self.shift_augmenter is not None:
+            B, T = imgs.shape[:2]
+            imgs_flat = imgs.reshape(-1, *imgs.shape[-3:])
+            imgs_flat, shift_pixels = self.shift_augmenter(imgs_flat)
+            imgs = imgs_flat.reshape(B, T, *imgs_flat.shape[-3:])
+
+        if self.pos_shifter is not None:
+            agent_pos, shift_value = self.pos_shifter(agent_pos)
+            action = batch['action'].to(device).clone()
+            action = action + shift_value.unsqueeze(1)
+        else:
+            action = batch['action'].to(device)
+
         nobs = self.normalizer.normalize({
             'image': imgs.to(device),
             'agent_pos': agent_pos.to(device)
         })
-        nactions = self.normalizer['action'].normalize(batch['action'].to(device))
+        nactions = self.normalizer['action'].normalize(action)
 
         nimgs = nobs['image']
         nagent_pos = nobs['agent_pos']
@@ -292,10 +314,8 @@ class ActionDiffusionImagePolicy(BaseImagePolicy):
         batch_size = nimgs.shape[0]
 
         # Sample random timestep and noise
-        # Sample timesteps from 1 to diff_steps, then convert to array indices
         random_t = torch.randint(1, self.diff_steps + 1, (batch_size,), device=action.device)
-        random_noise = torch.randn_like(action)
-        # Optional: clamp training noise for stability
+        random_noise = torch.randn(action.shape, device=action.device, dtype=action.dtype)
         random_noise = self._clip_tensor(random_noise, self.randn_clip_value)
 
         sqrt_alpha_cumprod = torch.sqrt(self.cum_alphas[random_t - 1]).reshape(batch_size, 1, 1)

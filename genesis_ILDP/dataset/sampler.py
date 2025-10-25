@@ -13,7 +13,7 @@ import numpy as np
 #     val_idxs = rng.choice(n_episodes, size=n_val, replace=False)
 #     val_mask[val_idxs] = True
 #     return val_mask
-from diffusion_policy.diffusion_policy.common.sampler import get_val_mask, downsample_mask
+from diffusion_policy.common.sampler import get_val_mask, downsample_mask
 
 def create_indices(episode_ends, sequence_length, episode_mask, pad_before, pad_after):
     indices = []
