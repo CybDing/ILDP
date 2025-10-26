@@ -109,6 +109,7 @@ class DataCollector:
         self.episodes = []
         self.current_episode = []
         self.last_agent_pos = np.array([WORKSPACE_X_MIN, WORKSPACE_Y_MIN])
+        self.final_intersection_ratios = []  # Track final intersection ratio per episode
         
     def decode_image(self, img_data):
         if not img_data or img_data.get('format') != 'jpeg_base64':
@@ -159,11 +160,15 @@ class DataCollector:
     def finish_episode(self):
         if not self.current_episode:
             return False
-        
+
         episode_data = {}
         for key in self.current_episode[0].keys():
             episode_data[key] = np.stack([step[key] for step in self.current_episode])
-        
+
+        # Extract final intersection_ratio from last timestep (state[2])
+        final_intersection_ratio = self.current_episode[-1]['state'][2]
+        self.final_intersection_ratios.append(final_intersection_ratio)
+
         self.episodes.append(episode_data)
         self.current_episode = []
         return True
@@ -200,19 +205,31 @@ class DataCollector:
             for episode_idx, episode_data in enumerate(self.episodes):
                 print(f"Adding episode {episode_idx + 1}/{len(self.episodes)}")
                 replay_buffer.add_episode(
-                    data=episode_data, 
+                    data=episode_data,
                     chunks=chunks,
                     compressors=compressors
                 )
-            
+
+            # Save final intersection ratios as episode-level metadata
+            final_intersection_ratios_array = np.array(self.final_intersection_ratios, dtype=np.float32)
+            root = zarr.open(store, mode='a')
+            root.create_dataset(
+                'final_intersection_ratio',
+                data=final_intersection_ratios_array,
+                shape=(len(self.episodes),),
+                dtype=np.float32,
+                compressor=zarr.Blosc(cname='lz4', clevel=5)
+            )
+
             print(f"Successfully saved {len(self.episodes)} episodes to {filepath}")
             print(f"Total timesteps: {replay_buffer.n_steps}")
-            
+
             print("Data structure:")
             for key in replay_buffer.data.keys():
                 arr = replay_buffer.data[key]
                 print(f"  {key}: shape={arr.shape}, dtype={arr.dtype}")
-            
+            print(f"  final_intersection_ratio: shape={final_intersection_ratios_array.shape}, dtype={final_intersection_ratios_array.dtype}")
+
             return True
             
         except Exception as e:

@@ -32,7 +32,7 @@ class PushTEnv(gym.Env):
                  ylim=.2,
                  seed=None,
                  model_path=env_path,
-                 fps = 30,
+                 fps = 25,
                  show_fps = True,
                  device = None,
                  done_ratio = 0.7,
@@ -43,9 +43,10 @@ class PushTEnv(gym.Env):
         self.render_size = render_size
         self.sim_hz = float(sim_hz) # sim_hz represent the actual simulation timestep for robotic manipulation 
         self.control_hz = float(control_hz)# control_hz represent the control frequency of receiving a new action from controller
-        self.frame_per_control_step = fps / self.control_hz
-        self.step_per_render = np.floor(self.sim_hz / self.control_hz / (self.frame_per_control_step - 1))
-        print("step_per_render: ", self.step_per_render) 
+        self.steps_per_render = int(self.sim_hz) // fps # control how many frames should be recording
+        print("step_per_render: ", self.step_per_render) # render after how many global steps(refresh when a new step() is called for simplification)
+
+
 
         self.is_init = False
         self._seed = seed
@@ -95,14 +96,13 @@ class PushTEnv(gym.Env):
 
     def start(self, n_envs=1, show_interact_viewer=False, show_camera=False, 
               seed=None, env_separate=False):
-        # init only once
         assert self.is_init == False 
         self.n_envs = n_envs
         
         gs.init(
-            seed = 0,
-            #seed = self._seed
-            backend = gs.gpu
+            seed = self.env_seed if self.env_seed is not None else 0,
+            backend = gs.gpu, 
+            performance_mode = True
         )
         self.scene = gs.Scene(
             show_FPS=False,
@@ -179,14 +179,14 @@ class PushTEnv(gym.Env):
         #     GUI=show_camera,
         # )
 
-        # the original tilted view from one side of the workspace which is used for the robot observing the environment 
-        # self.cam = self.scene.add_camera(
-        #     res=self.render_size,
-        #     pos=(0, 0.3, 0.9),
-        #     lookat=(-0.4, 0.3, 0),
-        #     fov=65,
-        #     GUI=show_camera,
-        # )
+        # Original tilted view from one side of the workspace which is used for the robot observing the environment 
+        self.cam = self.scene.add_camera(
+            res=self.render_size,
+            pos=(0, 0.3, 0.9),
+            lookat=(-0.4, 0.3, 0),
+            fov=65,
+            GUI=show_camera,
+        )
         # low level cam view 
         # self.cam = self.scene.add_camera(
         #     res=self.render_size,
@@ -195,14 +195,15 @@ class PushTEnv(gym.Env):
         #     fov=65,
         #     GUI=show_camera,
         # )
+
         # high level cam view
-        self.cam = self.scene.add_camera(
-            res=self.render_size,
-            pos=(-1.2, 1.2, 1),
-            lookat=(-0.3, 0.3, 0.35),
-            fov=65,
-            GUI=show_camera,
-        )
+        # self.cam = self.scene.add_camera(
+        #     res=self.render_size,
+        #     pos=(-1.2, 1.2, 1),
+        #     lookat=(-0.3, 0.3, 0.35),
+        #     fov=65,
+        #     GUI=show_camera,
+        # )
 
         # the tested attached cameras which could be attached to the eef when during the rolling out, but the effect is not good for our eef which is short
         # self.cam_attached = self.scene.add_camera(
@@ -434,7 +435,7 @@ class PushTEnv(gym.Env):
         # Always maintain full environment indexing for consistent tensor shapes
         all_envs_idx = torch.arange(self.n_envs, device=gs.device, dtype=torch.int32)
 
-        # print("envs_idx", envs_idx)
+        
         n_steps = int(self.sim_hz // self.control_hz)
         if action is not None:
             shape = np.shape(action)
@@ -457,13 +458,13 @@ class PushTEnv(gym.Env):
             #        num_waypoints = n_steps
             # )
 
-        steps = 0
+        sim_steps = 0
         for _ in range(n_steps):
             self.scene.step()
-            if steps % int(self.step_per_render) == 0: # make sure that the frames being rendered is at about 30 fps
+            if sim_steps % int(self.step_per_render) == 0: # make sure that the frames being rendered is at about 30 fps
                 # Always get observations for ALL environments to maintain consistent indexing
-                observation = self._get_obs(rgb=True, envs_idx=all_envs_idx) # render less for faster simulation 
-            steps = steps + 1
+                observation = self._get_obs(rgb=True, envs_idx=all_envs_idx) # * render less for faster simulation 
+            sim_steps = sim_steps + 1
         # for point in waypoints:
         #     self.robot.control_dofs_position(position=point[:, 0:7], # does not control tcp joints
         #                                 dofs_idx_local=self.robot_dofs_idx[0:7], 
@@ -477,12 +478,8 @@ class PushTEnv(gym.Env):
 
         # print("eef pose: ", self.poses['agent_pos'][0,:2])
         # print("cube pose:", self.poses['cur_Tpose'][0,:])
-
-        ### judge after one control action with n_steps numebr of sim steps, preventing misjudge the done condition
-        # observation = self._get_obs(rgb=True, envs_idx=envs_idx)
         
-        info = self._get_info(all_envs_idx) # calculate the info for the inactive envs again for 
-        # consistency and we only grep the active envs idx value
+        info = self._get_info(all_envs_idx) # calculate the info for the all envs for convenience 
         
         done = [ratio > self.done_ratio for ratio in self._cal_intersection()]
         reward = self._cal_rewards()

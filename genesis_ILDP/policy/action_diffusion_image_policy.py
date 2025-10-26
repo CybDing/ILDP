@@ -16,7 +16,7 @@ from genesis_ILDP.model.vision.cnn_encoding import img_encoding_cnn
 from genesis_ILDP.model.common.modules import RandomShiftsAug, RandomPosShifter
 
 from diffusion_policy.model.common.normalizer import LinearNormalizer
-from diffusion_policy.model.vision.crop_randomizer import CropRandomizer
+from genesis_ILDP.model.vision.crop_randomizer import CropRandomizer
 
 
 class ActionDiffusionImagePolicy(BaseImagePolicy):
