@@ -145,7 +145,7 @@ class PushTEnv(gym.Env):
 
         self.robot : gs.engine.entities.RigidEntity = self.scene.add_entity(
             gs.morphs.URDF(
-                pos = (0, 0, 0.17),
+                pos = (0, 0, 0.3), # change to 0.17 could make sure the bot arm higher and not hinder more top views maybe 
                 file = self.path['robot'],
                 fixed=True,
                 collision=True,
