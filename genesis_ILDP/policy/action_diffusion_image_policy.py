@@ -372,7 +372,7 @@ class ActionDiffusionImagePolicy(BaseImagePolicy):
 
                 variance = self.betas[t-1] * (1 - self.cum_alphas[t-2]) / (1 - self.cum_alphas[t-1])
 
-                noise = torch.randn_like(predicted_trajs, generator=generator)
+                noise = torch.randn(predicted_trajs.shape, device=predicted_trajs.device, dtype=predicted_trajs.dtype, generator=generator)
                 noise = self._clip_tensor(noise, self.randn_clip_value)
                 predicted_trajs = mean + torch.sqrt(variance) * noise
                 predicted_trajs = self._clip_tensor(predicted_trajs, self.denoised_clip_value)
@@ -470,7 +470,7 @@ class ActionDiffusionImagePolicy(BaseImagePolicy):
                 noise_factor = noise_intensity * torch.sqrt(torch.clamp(sqrt_term, min=0.0))
                 direction_xt = torch.sqrt(1 - alpha_cumprod_prev - noise_factor**2) * predicted_noise_t
 
-                random_noise = torch.randn_like(predicted_trajs, generator=generator) if noise_intensity > 0 else 0
+                random_noise = torch.randn(predicted_trajs.shape, device=predicted_trajs.device, dtype=predicted_trajs.dtype, generator=generator) if noise_intensity > 0 else 0
                 if isinstance(random_noise, torch.Tensor):
                     random_noise = self._clip_tensor(random_noise, self.randn_clip_value)
                 predicted_trajs = torch.sqrt(alpha_cumprod_prev) * pred_x0 + direction_xt + noise_factor * random_noise

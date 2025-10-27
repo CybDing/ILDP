@@ -54,7 +54,7 @@ def robot_to_display(robot_x, robot_y):
     
     display_x = (-robot_x + WORKSPACE_X_MAX) / WORKSPACE_WIDTH
     display_y = (robot_y - WORKSPACE_Y_MIN) / WORKSPACE_HEIGHT
-    print(display_x)
+    # print(display_x)
     # Scale to screen size
     screen_x = display_x * SCALE
     screen_y = display_y * SCALE
@@ -123,12 +123,15 @@ class DataCollector:
     
     def record_timestep(self, obs_data):
 
-        # TODO change the record logic into recording the absolute position for ease of saving directly the position, 
-        # the relative version could be implemented inside the dataset, by calculating the temporal difference between the 
+        # TODO change the record logic into recording the absolute position for ease of saving directly the position,
+        # the relative version could be implemented inside the dataset, by calculating the temporal difference between the
         # action inserted for executing the arm
-        
+
         image = self.decode_image(obs_data.get('image'))
         if image is None:
+            print(f"[DEBUG] record_timestep failed: image decode returned None")
+            print(f"[DEBUG] image data type: {type(obs_data.get('image'))}")
+            print(f"[DEBUG] image data: {obs_data.get('image')}")
             return False
         
         # check if the tensor here should be which dimensional(commonly to be 2 dim)
@@ -370,10 +373,15 @@ def save_received_action_obs_data():
     with data_lock:  # Thread safety
         if action_obs_buffer and "timestamp" in action_obs_buffer:
             if latest_action_receive_buffer["timestamp"]:
+                print(f"[DEBUG] Trying to save {len(latest_action_receive_buffer['timestamp'])} received actions")
+                print(f"[DEBUG] action_obs_buffer has {len(action_obs_buffer['timestamp'])} timestamps")
                 t_saved = []
                 for t in list(latest_action_receive_buffer["timestamp"]):  # Copy to avoid mutation
                     if t not in action_obs_buffer["timestamp"]:
                         # print(action_obs_buffer["timestamp"])
+                        print(f"[DEBUG] WARNING: timestamp {t} not found in action_obs_buffer!")
+                        print(f"[DEBUG] Received timestamps: {list(latest_action_receive_buffer['timestamp'])}")
+                        print(f"[DEBUG] Buffer timestamps: {list(action_obs_buffer['timestamp'])}")
                         raise ValueError("saving for executed actions error, action not found in action_obs_buffer!\n" \
                         "Try check the buffer size, and the command latency with the env for help")
                     else:
@@ -383,7 +391,7 @@ def save_received_action_obs_data():
                         # print(t_index)
                         data_collector.record_timestep(get_dict_slice(action_obs_buffer, t_index))
                         t_saved.append(t)
-                        # print("action and obs from real step is being saved")
+                        print(f"[DEBUG] Saved timestep {t}, current_episode now has {len(data_collector.current_episode)} steps")
                 for t in t_saved:
                     latest_action_receive_buffer['timestamp'].remove(t)
 
@@ -478,14 +486,29 @@ while running:
             #     recording_controller.state = 'RECORDING' 
             #     print("Force started recording")
             elif event.key == K_s:
-                if recording_controller.state == 'RECORDING':
+                # First, save any pending actions that were received but not yet recorded
+                print(f"Pending actions in buffer: {len(latest_action_receive_buffer['timestamp'])}")
+                save_received_action_obs_data()
+
+                # Then finish current episode if there's any data
+                print(f"Current episode steps: {len(data_collector.current_episode)}")
+                if data_collector.current_episode:
                     data_collector.finish_episode()
-                
+                    print(f"Finished current episode")
+
+                print(f"Total episodes collected: {len(data_collector.episodes)}")
+
+                if not data_collector.episodes:
+                    print("No episodes to save! You need to record at least one episode first.")
+                    print("Press SPACE to start recording, move mouse to collect data.")
+                    running = False
+                    continue
+
                 output_dir = Path("data/genesis_collected")
                 output_dir.mkdir(parents=True, exist_ok=True)
                 timestamp = time.strftime("%Y%m%d_%H%M%S")
                 filepath = output_dir / f"genesis_data_{timestamp}.zarr"
-                
+
                 if data_collector.save_to_zarr(str(filepath)):
                     print(f"Saved {len(data_collector.episodes)} episodes to {filepath}")
                 else:

@@ -10,6 +10,6 @@ setup(
         "numcodecs",
     ],
     python_requires=">=3.8",
-    author="Research Team",
+    author="Leqi Ding",
     description="Genesis ILDP package for imitation learning and diffusion policy",
 )

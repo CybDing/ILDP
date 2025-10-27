@@ -22,7 +22,7 @@ from shapely.geometry import Polygon
 from genesis_ILDP.env.pushT_env import PushTEnv
 global reset_requested
 class PushTEnvServer(PushTEnv):
-    def __init__(self, render_size=(224, 224), xlim=0.1, ylim=0.1, seed=None, 
+    def __init__(self, render_size=(128, 128), xlim=0.1, ylim=0.1, seed=None, 
                  model_path=env_path, fps=30, show_fps=False):
         super().__init__(
             render_size=render_size, 
@@ -31,7 +31,8 @@ class PushTEnvServer(PushTEnv):
             seed=seed,
             model_path=model_path, 
             fps=fps, 
-            show_fps=show_fps
+            show_fps=show_fps, 
+            is_collecting_data=True, 
         )
 
     def _publish_keypoints(self, envs_idx=None):
@@ -203,26 +204,40 @@ def start_flask_server():
 if __name__ == '__main__':
     flask_thread = threading.Thread(target=start_flask_server, daemon=True)
     flask_thread.start()
-    
+
     time.sleep(1)
     print("Flask server should be running now")
-    
-    env = PushTEnvServer(show_fps=False)
-    env.start(n_envs=1, show_camera=True, show_interact_viewer=True, env_separate=False, seed=[0])
-    env.seed(np.arange(1))
+
+    env = PushTEnvServer(show_fps=True)
+
+    # Initialize seed counter to 0 (matching runner's train_start_seed)
+    current_seed = 0
+
+    # IMPORTANT: Set seed BEFORE start() to ensure gs.init() uses correct seed
+    # However, since start() requires n_envs to be set first, we'll start with env_seed=None
+    # which makes gs.init(seed=0), same as runner
+    env.start(n_envs=1, show_camera=True, show_interact_viewer=False, env_separate=False)
+
+    # Now set the per-env random generator for seed 0
+    env.seed(np.array([current_seed]))
     env.reset()
+    print(f"Environment initialized with seed: {current_seed}")
+
     action_count = 0
-    
+
     # env.start_recording()
     for i in range(100000):
 
         current_time = time.time()
         # Check if reset is requested
         if reset_requested:
-            print("Reset requested, resetting environment...")
+            # Increment seed AFTER using current seed, so next reset uses next seed
+            current_seed += 1
+            print(f"Reset requested, changing seed to {current_seed} and resetting environment...")
+            env.seed(np.array([current_seed]))
             env.reset()
             reset_requested = False
-            print("Environment reset completed")
+            print(f"Environment reset completed with new seed: {current_seed}")
             action = get_latest_action() # eat up the last action 
         # TODO change the logic of grasping the newest action into grasping 
         # the newest action and also check if the action is enough new to be executed

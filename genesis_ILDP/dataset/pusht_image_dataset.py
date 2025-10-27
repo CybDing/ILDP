@@ -16,7 +16,7 @@ import matplotlib.pyplot as plt
 
 class PushTImageDataset(BaseImageDataset):
     def __init__(self,
-            zarr_path, 
+            zarr_path,
             horizon=1,
             pad_before=1,
             pad_after=7,
@@ -24,31 +24,45 @@ class PushTImageDataset(BaseImageDataset):
             val_ratio=0.0,
             max_train_episodes=None
             ):
-        
+
         super().__init__()
         # Directly read into memory, with dict structure for data alignment. (When store is None for this API function)
         self.replay_buffer = ReplayBuffer.copy_from_path(
             zarr_path, keys=['img', 'state', 'action'])
+
+        # Load final_intersection_ratio if available
+        try:
+            import zarr
+            root = zarr.open(zarr_path, mode='r')
+            if 'final_intersection_ratio' in root:
+                self.final_intersection_ratios = np.array(root['final_intersection_ratio'][:])
+            else:
+                self.final_intersection_ratios = None
+        except Exception as e:
+            print(f"Warning: Could not load final_intersection_ratio: {e}")
+            self.final_intersection_ratios = None
+
         val_mask = get_val_mask(
-            n_episodes=self.replay_buffer.n_episodes, 
+            n_episodes=self.replay_buffer.n_episodes,
             val_ratio=val_ratio,
             seed=seed)
         train_mask = ~val_mask
         train_mask = downsample_mask(
-            mask=train_mask, 
-            max_n=max_train_episodes, 
+            mask=train_mask,
+            max_n=max_train_episodes,
             seed=seed)
 
         self.sampler = SequenceSampler(
-            replay_buffer=self.replay_buffer, 
+            replay_buffer=self.replay_buffer,
             horizon=horizon,
-            pad_before=pad_before, 
+            pad_before=pad_before,
             pad_after=pad_after,
             episode_mask=train_mask)
         self.train_mask = train_mask
         self.horizon = horizon
         self.pad_before = pad_before
         self.pad_after = pad_after
+        self.zarr_path = zarr_path
 
     def get_validation_dataset(self):
         val_set = copy.copy(self)
@@ -174,6 +188,7 @@ def test():
     zarr_path = '../data/train_data/pusht/genesis_data_20251019_151046.zarr' 
     zarr_path = '../data/train_data/pusht/pusht_cchi_v7_replay.zarr'
     zarr_path = '../data/train_data/pusht/merged_data_0925.zarr' 
+    zarr_path = '../data/train_data/pusht/genesis_data_20251027_004448.zarr'
     
     dataset = PushTImageDataset(zarr_path, horizon=16)
     print("Total sequences stored in Replay buffer: ", len(dataset))
@@ -186,14 +201,21 @@ def test():
     normalizer = dataset.get_normalizer(mode='limits')
 
     # print("normalizer stat: \n", normalizer.get_input_stats()['action'], normalizer.get_output_stats())
-    print(normalizer['action'].normalize(dataset.__getitem__(100)['action']))
-    print(normalizer.normalize({'action':(dataset.__getitem__(100)['action'])}))
+    print(normalizer['action'].normalize(dataset.__getitem__(10)['action']))
+    print(normalizer.normalize({'action':(dataset.__getitem__(10)['action'])}))
+
+    # Access final_intersection_ratio for episode 1
+    if dataset.final_intersection_ratios is not None:
+        print(f"Episode 1 final intersection ratio: {dataset.final_intersection_ratios[1]}")
+        print(f"All final intersection ratios: {dataset.final_intersection_ratios}")
+    else:
+        print("No final_intersection_ratio data available")
 
     # print(normalizer.unnormalize({'action':torch.Tensor([[0.1, 0]])}))
 
     # Add visualization after existing test code
     # print("\nVisualizing images...")
-    visualize_sequence_images(dataset, idx=8120, max_frames=16)
+    visualize_sequence_images(dataset, idx=40, max_frames=16)
     
     # # Display a single frame
     # sample = dataset.__getitem__(-30)
