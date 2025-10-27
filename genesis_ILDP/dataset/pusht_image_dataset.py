@@ -22,10 +22,12 @@ class PushTImageDataset(BaseImageDataset):
             pad_after=7,
             seed=42,
             val_ratio=0.0,
-            max_train_episodes=None
+            max_train_episodes=None,
+            workspace_limits=None  # Add workspace limits parameter
             ):
 
         super().__init__()
+        self.workspace_limits = workspace_limits
         # Directly read into memory, with dict structure for data alignment. (When store is None for this API function)
         self.replay_buffer = ReplayBuffer.copy_from_path(
             zarr_path, keys=['img', 'state', 'action'])
@@ -77,15 +79,76 @@ class PushTImageDataset(BaseImageDataset):
         return val_set
 
     def get_normalizer(self, mode='limits', use_image_normalizer=True, **kwargs):
-        data = {
-            'action': self.replay_buffer['action'],
-            'agent_pos': self.replay_buffer['state'][...,:2]
-        }
+        """
+        Get normalizer for the dataset.
+        If workspace_limits is provided, use manual normalization instead of data-based.
+        """
+        from diffusion_policy.model.common.normalizer import SingleFieldLinearNormalizer
+
         normalizer = LinearNormalizer()
-        normalizer.fit(data=data, last_n_dims=1, mode=mode, **kwargs)
+
+        # Use manual limits if provided
+        if self.workspace_limits is not None:
+            print("Using manual workspace limits for normalization:")
+            print(f"  X: {self.workspace_limits['xlim']}")
+            print(f"  Y: {self.workspace_limits['ylim']}")
+
+            # Create manual normalizers for action and agent_pos
+            for key in ['action', 'agent_pos']:
+                normalizer[key] = self._create_manual_normalizer(
+                    self.workspace_limits, mode=mode, **kwargs
+                )
+        else:
+            # Original behavior: fit from data
+            print("Computing normalization from data (workspace_limits not provided)")
+            data = {
+                'action': self.replay_buffer['action'],
+                'agent_pos': self.replay_buffer['state'][...,:2]
+            }
+            normalizer.fit(data=data, last_n_dims=1, mode=mode, **kwargs)
+
         if use_image_normalizer:
             normalizer['image'] = get_image_range_normalizer()
+
         return normalizer
+
+    def _create_manual_normalizer(self, limits, mode='limits', output_max=1.0, output_min=-1.0, **kwargs):
+        """
+        Create a normalizer with manual limits instead of data-based statistics.
+        """
+        import torch
+        from diffusion_policy.model.common.normalizer import SingleFieldLinearNormalizer
+
+        x_min, x_max = limits['xlim']
+        y_min, y_max = limits['ylim']
+
+        if mode == 'limits':
+            # For 2D data: [x, y]
+            input_min = torch.tensor([x_min, y_min], dtype=torch.float32)
+            input_max = torch.tensor([x_max, y_max], dtype=torch.float32)
+            input_mean = (input_min + input_max) / 2
+            input_std = (input_max - input_min) / 4  # Approximate std
+
+            # Compute scale and offset
+            input_range = input_max - input_min
+            scale = (output_max - output_min) / input_range
+            offset = output_min - scale * input_min
+
+            # Create normalizer manually
+            input_stats_dict = {
+                'min': input_min,
+                'max': input_max,
+                'mean': input_mean,
+                'std': input_std
+            }
+
+            return SingleFieldLinearNormalizer.create_manual(
+                scale=scale,
+                offset=offset,
+                input_stats_dict=input_stats_dict
+            )
+        else:
+            raise NotImplementedError(f"Manual normalization for mode={mode} not implemented")
 
     def __len__(self) -> int:
         return len(self.sampler)

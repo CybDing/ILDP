@@ -92,19 +92,22 @@ class RandomPosShifter(nn.Module):
                  workspace_xlim: tuple,
                  workspace_ylim: tuple,
                  shift_ratio: float = 0.3,
-                 randomness_intensity: float = 0.5):
+                 randomness_intensity: float = 0.5,
+                 max_abs_shift: float = None):
         """
         Args:
             workspace_xlim: (min, max) e.g., (-0.2, 0.2)
             workspace_ylim: (min, max) e.g., (-0.2, 0.2)
             shift_ratio: Max shift as ratio of available space (0-1)
             randomness_intensity: Probability of applying shift (0-1)
+            max_abs_shift: Absolute maximum shift value (safety limit). If None, no limit.
         """
         super().__init__()
         self.workspace_xlim = workspace_xlim
         self.workspace_ylim = workspace_ylim
         self.randomness_intensity = np.clip(randomness_intensity, 0, 1)
         self.shift_ratio = np.clip(shift_ratio, 0, 1)
+        self.max_abs_shift = max_abs_shift
 
     def forward(self, agent_pos):
         """
@@ -153,6 +156,11 @@ class RandomPosShifter(nn.Module):
             -space_down_y * shift_intensity[:, 1],
             space_up_y * shift_intensity[:, 1]
         )
+
+        # Apply absolute maximum shift limit if specified
+        if self.max_abs_shift is not None:
+            shift_x = torch.clamp(shift_x, -self.max_abs_shift, self.max_abs_shift)
+            shift_y = torch.clamp(shift_y, -self.max_abs_shift, self.max_abs_shift)
 
         # Expand to (B, T, 2)
         shift_value = torch.stack([shift_x, shift_y], dim=1).unsqueeze(1).expand(-1, horizon, -1)

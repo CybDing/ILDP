@@ -18,6 +18,13 @@ obs_as_global_cond: true      # Use observations as global conditioning
 past_action_visible: false    # Don't show past actions
 keypoint_visible_rate: 1.0    # Not used for image policy
 
+# === WORKSPACE LIMITS (for normalization and augmentation) ===
+# Set manual workspace boundaries for consistent normalization
+# If null, will compute from data (not recommended if data is incomplete)
+workspace_limits:
+  xlim: [0, 512]               # X-axis workspace range
+  ylim: [0, 512]               # Y-axis workspace range
+
 # === SHAPE METADATA ===
 shape_meta:
   action:
@@ -56,16 +63,17 @@ policy:
     num_crops: 1
     pos_enc: false
 
-  shift_augmenter: null  # set to enable RandomShiftsAug
-    # _target_: genesis_ILDP.model.common.modules.RandomShiftsAug
-    # pad: 10
+  shift_augmenter:  
+    _target_: genesis_ILDP.model.common.modules.RandomShiftsAug
+    pad: 10
 
-  pos_shifter: null  # set to enable RandomPosShifter
-    # _target_: genesis_ILDP.model.common.modules.RandomPosShifter
-    # workspace_xlim: [0, 512]
-    # workspace_ylim: [0, 512]
-    # shift_ratio: 0.3
-    # randomness_intensity: 0.5
+  pos_shifter:
+    _target_: genesis_ILDP.model.common.modules.RandomPosShifter
+    workspace_xlim: ${workspace_limits.xlim}
+    workspace_ylim: ${workspace_limits.ylim}
+    shift_ratio: 0.3
+    randomness_intensity: 0.2
+    max_abs_shift: 50.0        # Absolute max shift in pixels (safety limit)
 
   imgs_encoding_net:
     _target_: genesis_ILDP.model.vision.cnn_encoding.img_encoding_cnn
@@ -119,10 +127,11 @@ task:
     zarr_path: ../data/train_data/pusht/merged_data_0925.zarr
     horizon: ${horizon}
     pad_before: ${eval:'${n_obs_steps}-1'}     # 1
-    pad_after: ${eval:'${n_action_steps}-1'}   # 7  
+    pad_after: ${eval:'${n_action_steps}-1'}   # 7
     seed: 42
     val_ratio: 0.05
     max_train_episodes: null
+    workspace_limits: ${workspace_limits}      # Pass workspace limits for manual normalization
   
   # Environment runner (optional for training, but good for evaluation)
   env_runner:
