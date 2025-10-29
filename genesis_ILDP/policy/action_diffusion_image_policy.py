@@ -46,21 +46,27 @@ class ActionDiffusionImagePolicy(BaseImagePolicy):
                  denoised_clip_value: float | tuple | None = 10.0,
                  action_clip_value: float | tuple | None = None,
 
+                 # Alternative: specify action clip bounds directly (cleaner for config)
+                 action_x_min: float | None = None,
+                 action_x_max: float | None = None,
+                 action_y_min: float | None = None,
+                 action_y_max: float | None = None,
+
                  shift_augmenter: RandomShiftsAug = None,
                  pos_shifter: RandomPosShifter = None,
 
                  **kwargs):
         super().__init__()
-        
+
         action_shape = shape_meta['action']['shape']
         assert len(action_shape) == 1
         self.action_dim = action_shape[0]
 
         obs_shape_meta = shape_meta['obs']
-        
+
         assert 'image' in obs_shape_meta, "ActionDiffusionImagePolicy requires 'image' in observations"
         assert 'agent_pos' in obs_shape_meta, "ActionDiffusionImagePolicy requires 'agent_pos' in observations"
-        
+
         self.diff_steps = diff_steps
         self.obs_steps = obs_steps
         self.horizon = horizon
@@ -72,7 +78,13 @@ class ActionDiffusionImagePolicy(BaseImagePolicy):
 
         self.randn_clip_value = randn_clip_value
         self.denoised_clip_value = denoised_clip_value
-        self.action_clip_value = action_clip_value
+
+        # Build action_clip_value from individual bounds if provided
+        if action_clip_value is None and all(v is not None for v in [action_x_min, action_x_max, action_y_min, action_y_max]):
+            # User provided individual bounds, construct the tuple
+            self.action_clip_value = ([action_x_min, action_y_min], [action_x_max, action_y_max])
+        else:
+            self.action_clip_value = action_clip_value
 
         self.cropper = cropper
         if cropper is None: self.enable_crop = False
@@ -110,9 +122,7 @@ class ActionDiffusionImagePolicy(BaseImagePolicy):
         print(f"- Observation steps: {obs_steps}")
         print(f"- Clip settings: randn={self.randn_clip_value}, denoised={self.denoised_clip_value}, action={self.action_clip_value}")
 
-    # --------------------
-    # Helper clamp methods
-    # --------------------
+
     def _clip_tensor(self, x: torch.Tensor, clip_value):
         """Clamp tensor x by clip_value if provided.
         - If clip_value is a scalar (float/int): clamp to [-clip_value, +clip_value]
@@ -133,12 +143,17 @@ class ActionDiffusionImagePolicy(BaseImagePolicy):
     def _get_action_clip_bounds(self, device, dtype):
         """Expect action_clip_value as (min_list, max_list), each length == action_dim.
         Returns tensors shaped (1, 1, Da) for broadcasting.
+
+        action_clip_value should be: ([x_min, y_min, ...], [x_max, y_max, ...])
         """
         v = self.action_clip_value
         if v is None:
             return None, None
+
+        # Ensure it's a tuple/list of length 2
         if not (isinstance(v, (tuple, list)) and len(v) == 2):
-            raise ValueError("action_clip_value must be (min_list, max_list)")
+            raise ValueError(f"action_clip_value must be (min_list, max_list), got type={type(v)}, value={v}")
+
         min_list, max_list = v
         Da = self.action_dim
         min_arr = torch.as_tensor(min_list, device=device, dtype=dtype)
@@ -169,10 +184,10 @@ class ActionDiffusionImagePolicy(BaseImagePolicy):
         # Enforce n_obs_steps length consistently on both modalities
         if imgs.shape[1] > self.n_obs_steps:
             imgs = imgs[:, :self.n_obs_steps]
-            print('[ActionDiffusionImagePolicy] Warning: trimming images to n_obs_steps')
+            # print('[ActionDiffusionImagePolicy] Warning: trimming images to n_obs_steps')
         if agent_pos.shape[1] > self.n_obs_steps:
             agent_pos = agent_pos[:, :self.n_obs_steps]
-            print('[ActionDiffusionImagePolicy] Warning: trimming agent_pos to n_obs_steps')
+            # print('[ActionDiffusionImagePolicy] Warning: trimming agent_pos to n_obs_steps')
         if imgs.shape[1] < self.n_obs_steps or agent_pos.shape[1] < self.n_obs_steps:
             raise ValueError("[ActionDiffusionImagePolicy] Error! obs steps smaller than n_obs_steps; cannot predict actions")
         
@@ -289,6 +304,7 @@ class ActionDiffusionImagePolicy(BaseImagePolicy):
         device = next(self.parameters()).device
 
         # Apply augmentations (training only)
+        # We directly use the shifted imgs for training with size equal to the original img input
         if self.shift_augmenter is not None:
             B, T = imgs.shape[:2]
             imgs_flat = imgs.reshape(-1, *imgs.shape[-3:])
@@ -298,7 +314,10 @@ class ActionDiffusionImagePolicy(BaseImagePolicy):
         if self.pos_shifter is not None:
             agent_pos, shift_value = self.pos_shifter(agent_pos)
             action = batch['action'].to(device).clone()
-            action = action + shift_value.unsqueeze(1)
+            # shift_value shape: (B, n_obs_steps, 2), need to broadcast to (B, horizon, 2)
+            # Take the shift from first obs step and apply to all action steps
+            shift_value_for_action = shift_value[:, 0:1, :].expand(-1, action.shape[1], -1)
+            action = action + shift_value_for_action
         else:
             action = batch['action'].to(device)
 
@@ -314,7 +333,7 @@ class ActionDiffusionImagePolicy(BaseImagePolicy):
         batch_size = nimgs.shape[0]
 
         # Sample random timestep and noise
-        random_t = torch.randint(1, self.diff_steps + 1, (batch_size,), device=action.device)
+        random_t = torch.randint(1, self.diff_steps, (batch_size,), device=action.device)
         random_noise = torch.randn(action.shape, device=action.device, dtype=action.dtype)
         random_noise = self._clip_tensor(random_noise, self.randn_clip_value)
 
@@ -352,7 +371,7 @@ class ActionDiffusionImagePolicy(BaseImagePolicy):
         if recording_diffusion:
             action_buffer = [predicted_trajs.clone()] # snapshot (B, horizons, Da)           
 
-        for step_idx, t in enumerate(reversed(range(1, self.diff_steps + 1))):
+        for step_idx, t in enumerate(reversed(range(1, self.diff_steps))):
             # Time encoding
             t_features = torch.stack([self.time_encoding(t).to(device=imgs.device)
                                     for _ in range(batch_size)], dim=0)
@@ -401,7 +420,7 @@ class ActionDiffusionImagePolicy(BaseImagePolicy):
         # Add constant dimension (0.27) to the end
         # predicted_trajs_unnormalized shape: (batch_size, horizon, action_dim)
         batch_size, horizon, action_dim = predicted_trajs_unnormalized.shape
-        const_dim = torch.full((batch_size, horizon, 1), 0.27,
+        const_dim = torch.full((batch_size, horizon, 1), 0.25,
                               device=predicted_trajs_unnormalized.device,
                               dtype=predicted_trajs_unnormalized.dtype)
         predicted_trajs_with_const = torch.cat([predicted_trajs_unnormalized, const_dim], dim=-1)
@@ -489,7 +508,7 @@ class ActionDiffusionImagePolicy(BaseImagePolicy):
         # Add constant dimension (0.27) to the end
         # predicted_trajs_unnormalized shape: (batch_size, horizon, action_dim)
         batch_size, horizon, action_dim = predicted_trajs_unnormalized.shape
-        const_dim = torch.full((batch_size, horizon, 1), 0.27, 
+        const_dim = torch.full((batch_size, horizon, 1), 0.25, 
                               device=predicted_trajs_unnormalized.device, 
                               dtype=predicted_trajs_unnormalized.dtype)
         predicted_trajs_with_const = torch.cat([predicted_trajs_unnormalized, const_dim], dim=-1)

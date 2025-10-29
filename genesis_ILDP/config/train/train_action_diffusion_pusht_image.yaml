@@ -1,10 +1,7 @@
-# === TRAINING CONFIGURATION FOR ACTION DIFFUSION IMAGE POLICY ===
-# Uses only genesis_ILDP components, no diffusion_policy dependencies
-
 _target_: genesis_ILDP.workspace.train_action_diffusion_image_workspace.TrainActionDiffusionImageWorkspace
 
 # === EXPERIMENT SETTINGS ===
-exp_name: "action_diffusion_pusht_image_Cosine_with_Crop"
+exp_name: "action_diffusion_pusht_image_Cosine_with_Crop_lr_scale_without_pos_shift"
 task_name: pusht_image_ddpm
 name: train_action_diffusion_image
 
@@ -21,9 +18,9 @@ keypoint_visible_rate: 1.0    # Not used for image policy
 # === WORKSPACE LIMITS (for normalization and augmentation) ===
 # Set manual workspace boundaries for consistent normalization
 # If null, will compute from data (not recommended if data is incomplete)
-workspace_limits:
-  xlim: [0, 512]               # X-axis workspace range
-  ylim: [0, 512]               # Y-axis workspace range
+workspace_limits: null 
+  # xlim: [-0.6, -0.15]               # X-axis workspace range
+  # ylim: [0.15, 0.6]               # Y-axis workspace range
 
 # === SHAPE METADATA ===
 shape_meta:
@@ -46,34 +43,42 @@ policy:
   n_action_steps: ${n_action_steps}
   n_obs_steps: ${n_obs_steps}
   obs_steps: ${n_obs_steps} 
-  variance_threshold: 10
+  # variance_threshold: 10
   
-  # Diffusion parameters 
+  # Diffusion parameters
   diff_steps: 100              # Number of diffusion steps
-  
+
   use_ddpm: true               # Use DDPM sampling (true) or DDIM (false)
   # ddim_steps: 15               # Number of DDIM steps for inference
   # noise_intensity: 0.0         # DDIM noise intensity (0.0=deterministic ddpm)
 
-  cropper: # set null to disable cropping
-    _target_: genesis_ILDP.model.vision.crop_randomizer.CropRandomizer
-    input_shape: ${shape_meta.obs.image.shape}
-    crop_height: 84
-    crop_width: 84
-    num_crops: 1
-    pos_enc: false
+  action_x_min: -0.8
+  action_x_max: -0.
+  action_y_min: 0.
+  action_y_max: 0.8
+
+  randn_clip_value: null
+  denoised_clip_value: null
+
+  cropper: null # set null to disable cropping
+    # _target_: genesis_ILDP.model.vision.crop_randomizer.CropRandomizer
+    # input_shape: ${shape_meta.obs.image.shape}
+    # crop_height: 84
+    # crop_width: 84
+    # num_crops: 1
+    # pos_enc: false
 
   shift_augmenter:  
     _target_: genesis_ILDP.model.common.modules.RandomShiftsAug
-    pad: 10
+    pad: 20
 
   pos_shifter:
     _target_: genesis_ILDP.model.common.modules.RandomPosShifter
-    workspace_xlim: ${workspace_limits.xlim}
-    workspace_ylim: ${workspace_limits.ylim}
+    workspace_xlim: [-0.8, 0.0]
+    workspace_ylim: [0.0, 0.8]
     shift_ratio: 0.3
     randomness_intensity: 0.2
-    max_abs_shift: 50.0        # Absolute max shift in pixels (safety limit)
+    max_abs_shift: null        
 
   imgs_encoding_net:
     _target_: genesis_ILDP.model.vision.cnn_encoding.img_encoding_cnn
@@ -83,7 +88,7 @@ policy:
     pretrained: false           # Set to false for end-to-end training from scratch
     use_spatial_softmax: false
     spatial_softmax_temp: 1.0
-    input_image_shape: [84, 84]
+    input_image_shape: [96, 96]
      # Use cropped shape if cropping enabled, else full image shape
     dropout: 0.0
     # - Without spatial_softmax: outputs 512 (from ResNet18's avgpool)
@@ -96,13 +101,12 @@ policy:
     use_mlp_layer: true
     dropout: 0.0
   
-  pos_encoding:
+  pos_encoding: null
     # _target_: genesis_ILDP.model.encoding.pos_encoding
     # encoded_dim: 128
     # agent_pos_dim: 2
     # dropout: 0.0
-    null
-
+    
   conditioned_unet:
     _target_: genesis_ILDP.model.diffusion.conditioned_unet.Unet
     # dim_mults: [1, 2, 4, 8]
@@ -124,7 +128,7 @@ task:
   dataset:
     _target_: genesis_ILDP.dataset.pusht_image_dataset.PushTImageDataset
     # zarr_path: ../data/train_data/pusht/pusht_cchi_v7_replay.zarr
-    zarr_path: ../data/train_data/pusht/merged_data_0925.zarr
+    zarr_path: ../data/train_data/pusht/pusht_1027_cleaned.zarr
     horizon: ${horizon}
     pad_before: ${eval:'${n_obs_steps}-1'}     # 1
     pad_after: ${eval:'${n_action_steps}-1'}   # 7
@@ -152,13 +156,15 @@ task:
     enable_past_action: False
     enable_render: True
     done_ratio: 0.7
+    spawn_center: [-0.3, 0.3]
+    spawn_range_scale: 0.5
 
 # === TRAINING CONFIGURATION ===  
 training:
   seed: 42
   device: cuda:0
   num_epochs: 500             # Standard training epochs
-  batch_size: 128               # Batch size
+  batch_size: 64               # Batch size
   deterministic: true          # Enable deterministic algorithms for reproducibility
   worker_seed_strategy: offset # offset | independent (controls DataLoader worker seeding)
   

@@ -17,25 +17,29 @@ from diffusion_policy.common.replay_buffer import ReplayBuffer
 pygame.init()
 
 # Robot workspace bounds (easy to change for different setups)
-WORKSPACE_X_MIN = -0.8  # Minimum x in robot frame (negative)
-WORKSPACE_X_MAX = 0.1  # Maximum x in robot frame (negative)
+WORKSPACE_X_MIN = -0.7  # Minimum x in robot frame (negative)
+WORKSPACE_X_MAX = 0.  # Maximum x in robot frame (negative)
 
-WORKSPACE_Y_MIN = -0.1   # Minimum y in robot frame
-WORKSPACE_Y_MAX = 0.8   # Maximum y in robot frame
+WORKSPACE_Y_MIN = -0.   # Minimum y in robot frame
+WORKSPACE_Y_MAX = 0.7   # Maximum y in robot frame
 
 # Calculate workspace dimensions
 WORKSPACE_WIDTH = abs(WORKSPACE_X_MAX - WORKSPACE_X_MIN)
 WORKSPACE_HEIGHT = WORKSPACE_Y_MAX - WORKSPACE_Y_MIN
 
 # Display settings
-DISPLAY_SIZE = 800
+DISPLAY_SIZE = 600
 width, height = DISPLAY_SIZE, DISPLAY_SIZE
 screen = pygame.display.set_mode((width, height))
 clock = pygame.time.Clock()
 font = pygame.font.SysFont('Arial', 16)
 
 # Auto-scale based on workspace size
-SCALE = DISPLAY_SIZE / max(WORKSPACE_WIDTH, WORKSPACE_HEIGHT)
+# Use the actual workspace dimensions to fit display properly
+SCALE_X = DISPLAY_SIZE / WORKSPACE_WIDTH
+SCALE_Y = DISPLAY_SIZE / WORKSPACE_HEIGHT
+# Use the smaller scale to ensure entire workspace fits in display
+SCALE = min(SCALE_X, SCALE_Y)
 
 # Colors
 WHITE = (255, 255, 255)
@@ -51,14 +55,13 @@ def robot_to_display(robot_x, robot_y):
     Display: flip x to positive for visualization
     """
     # Flip x (from negative to positive) and normalize to [0, 1]
-    
     display_x = (-robot_x + WORKSPACE_X_MAX) / WORKSPACE_WIDTH
     display_y = (robot_y - WORKSPACE_Y_MIN) / WORKSPACE_HEIGHT
-    # print(display_x)
-    # Scale to screen size
-    screen_x = display_x * SCALE
-    screen_y = display_y * SCALE
-    # print(screen_x, screen_y)
+
+    # Scale to screen size (flip Y coordinate for pygame where Y=0 is top)
+    screen_x = display_x * DISPLAY_SIZE
+    screen_y = (1.0 - display_y) * DISPLAY_SIZE  # Flip Y: top=0, bottom=DISPLAY_SIZE
+
     return (screen_x, screen_y)
 
 def display_to_robot(screen_x, screen_y):
@@ -66,12 +69,16 @@ def display_to_robot(screen_x, screen_y):
     Returns the actual robot coordinates (x is negative)
     """
     # Normalize screen coordinates to [0, 1]
-    norm_x = screen_x / SCALE
-    norm_y = screen_y / SCALE
+    norm_x = screen_x / DISPLAY_SIZE
+    norm_y = screen_y / DISPLAY_SIZE
+
+    # Flip Y back (pygame Y=0 is top, robot Y increases upward)
+    norm_y = 1.0 - norm_y
 
     # Convert to robot frame (x is negative)
-    robot_x = (WORKSPACE_X_MAX - norm_x * WORKSPACE_WIDTH)
+    robot_x = WORKSPACE_X_MAX - norm_x * WORKSPACE_WIDTH
     robot_y = WORKSPACE_Y_MIN + norm_y * WORKSPACE_HEIGHT
+
     return (robot_x, robot_y)
 
 latest_data = {
@@ -373,8 +380,8 @@ def save_received_action_obs_data():
     with data_lock:  # Thread safety
         if action_obs_buffer and "timestamp" in action_obs_buffer:
             if latest_action_receive_buffer["timestamp"]:
-                print(f"[DEBUG] Trying to save {len(latest_action_receive_buffer['timestamp'])} received actions")
-                print(f"[DEBUG] action_obs_buffer has {len(action_obs_buffer['timestamp'])} timestamps")
+                # print(f"[DEBUG] Trying to save {len(latest_action_receive_buffer['timestamp'])} received actions")
+                # print(f"[DEBUG] action_obs_buffer has {len(action_obs_buffer['timestamp'])} timestamps")
                 t_saved = []
                 for t in list(latest_action_receive_buffer["timestamp"]):  # Copy to avoid mutation
                     if t not in action_obs_buffer["timestamp"]:

@@ -99,6 +99,18 @@ def main(eval_cfg: DictConfig) -> None:
     policy.to(target_device)
     policy.eval()
 
+    # Apply policy overrides if specified
+    if 'overrides' in eval_cfg and eval_cfg.overrides is not None and 'policy' in eval_cfg.overrides:
+        print("\n=== Applying policy attribute overrides ===")
+        policy_overrides = eval_cfg.overrides.policy
+        for key, value in policy_overrides.items():
+            if hasattr(policy, key):
+                old_value = getattr(policy, key)
+                setattr(policy, key, value)
+                print(f"  {key}: {old_value} -> {value}")
+            else:
+                print(f"  Warning: Policy has no attribute '{key}', skipping")
+
     if 'env_runner' in eval_cfg and eval_cfg.env_runner is not None:
         print("\n=== Using custom env_runner from eval config ===")
         runner_config = eval_cfg.env_runner

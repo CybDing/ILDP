@@ -27,7 +27,7 @@ class PushTEnv(gym.Env):
     def __init__(self,
                  sim_hz = 100, 
                  control_hz = 10, 
-                 render_size=(96, 96),
+                 render_size=(128, 128),
                  xlim=.2,
                  ylim=.2,
                  seed=None,
@@ -181,21 +181,21 @@ class PushTEnv(gym.Env):
         # )
 
         # Original tilted(make sure this is watched over the negative x axis) view from one side of the workspace which is used for the robot observing the environment 
-        self.cam = self.scene.add_camera(
-            res=self.render_size,
-            pos=(0, 0.3, 0.9),
-            lookat=(-0.4, 0.3, 0),
-            fov=65,
-            GUI=show_camera,
-        )
-        # low level cam view 
         # self.cam = self.scene.add_camera(
         #     res=self.render_size,
-        #     pos=(-1, 1, 0.5),
-        #     lookat=(-0.3, 0.3, 0.35),
+        #     pos=(0, 0.3, 0.9),
+        #     lookat=(-0.4, 0.3, 0),
         #     fov=65,
         #     GUI=show_camera,
         # )
+        # low level cam view 
+        self.cam = self.scene.add_camera(
+            res=self.render_size,
+            pos=(-0.7, 0.7, 0.95),
+            lookat=(-0.4, 0.4, 0.1),
+            fov=65,
+            GUI=show_camera,
+        )
 
         # high level cam view
         # self.cam = self.scene.add_camera(
@@ -369,8 +369,8 @@ class PushTEnv(gym.Env):
             target_angle
         ], axis=-1)
 
-        # the original home_pos used for the collecting data and first version pushT
-        home_pos_down = torch.tensor([-0.4602,  1.3013,  2.5882,  1.1296,  0.7087,  0.6787,  1.2742], device=gs.device).repeat(len(envs_idx), 1)
+        # the original home_pos used for the collecting data and training and testing version 1
+        # home_pos_down = torch.tensor([-0.4602,  1.3013,  2.5882,  1.1296,  0.7087,  0.6787,  1.2742], device=gs.device).repeat(len(envs_idx), 1)
         
         # home pos position at [-0.7, 0.7, 0.6] when the robot base link is on the ground
         # home_pos_down = torch.tensor([2.5575,  -1.6492,  0.0000, -1.4629,  0.0000,  -1.3845,  1.8101], device=gs.device).repeat(len(envs_idx), 1)
@@ -378,12 +378,16 @@ class PushTEnv(gym.Env):
         #                                 dim=1)
 
         # home_pos_down = self._ikine(self.eef, 
-        #                             pos=torch.tensor([-0.4, 0.4, 0.4]).repeat(num_reset, 1),
+        #                             pos=torch.tensor([-0.35, 0.02, 0.25]).repeat(num_reset, 1),
         #                             quat=torch.tensor([0, 0, 1, 0]).repeat(num_reset, 1), 
         #                             envs_idx = envs_idx, 
         #                             init_qpos=None)[:, 0:7]
-                    
+        home_pos_down = torch.tensor([4.8013e-01,  1.7891e+00, -7.5375e-01, -8.2577e-01, -2.0216e+00,
+          7.3429e-01,  2.1266e+00], device=gs.device).repeat(len(envs_idx), 1)
+                 
         self.home_pos = home_pos_down
+        # print(self.home_pos)
+
         # home_pos_down = torch.tensor([-0.3794,  1.3189,  2.6545,  1.5788,  1.0798,  1.0309,  0.8671]).repeat(self.n_envs, 1)
 
         # home_pos_down = torch.Tensor([[ 2.5060, -1.5572, -0.5973,  2.4180,  2.3973,  0.5915, -0.9210]]).repeat(self.n_envs, 1)
@@ -392,9 +396,6 @@ class PushTEnv(gym.Env):
         # home_pos_down = torch.tensor([-2.7925,  1.6561, -0.0733, -1.7983, -0.2336,  1.2497,  2.9667], device=gs.device, 
         #                              dtype=torch.float32).repeat(self.n_envs, 1)
         
-        # print("Predicted joint position:", home_pos_down)
-        # raise ValueError # used for print Predicted joint position not being hided from other messages 
-    
         self.robot.set_dofs_position(
             position=home_pos_down,
             dofs_idx_local=self.robot_dofs_idx[0:7],
@@ -445,7 +446,7 @@ class PushTEnv(gym.Env):
             else: 
                quat = torch.tile(torch.tensor([0, 0, 1, 0], device=self.device), (len(envs_idx), 1))
                qpos = self._ikine(self.eef, action, quat, envs_idx)
-            #  print(qpos)
+            # print(qpos[0:7])
             self.robot.control_dofs_position(position=qpos[:, 0:7], # does not control tcp joints
                                         dofs_idx_local=self.robot_dofs_idx[0:7], 
                                         envs_idx=envs_idx
@@ -742,7 +743,7 @@ class PushTEnv(gym.Env):
     
 if __name__ == '__main__':
     env = PushTEnv()
-    env.start(n_envs=1, show_camera=False, show_interact_viewer=True, 
+    env.start(n_envs=1, show_camera=True, show_interact_viewer=True, 
               env_separate=False, seed=[0])
     env.seed([0])
     env.reset()
@@ -751,8 +752,9 @@ if __name__ == '__main__':
     # env.start_recording()
     for i in range(5000):
         current_time = time.time()
-        _, _, _, info = env.step(action=torch.tensor([[-0.4, 0.4, 0.27]]))
+        # _, _, _, info = env.step(action=torch.tensor([[-0.325, 0.325, 0.27]]))
         # _, _, _, info = env.step()
+        _, _, _, info = env.step(action=torch.tensor([[-0.35, 0.02, 0.25]])) 
 
         finishing_time = time.time()
         executing_time = finishing_time - current_time

@@ -183,6 +183,7 @@ def visualize_sequence_images(dataset, idx=0, max_frames=8):
     """
     sample = dataset.__getitem__(idx)
     images = sample['obs']['image']  # Shape: (T, 3, 96, 96)
+    print(images.shape)
     agent_pos = sample['obs']['agent_pos']  # Shape: (T, 2)
     actions = sample['action']  # Shape: (T, 2)
     
@@ -215,7 +216,7 @@ def visualize_sequence_images(dataset, idx=0, max_frames=8):
             axes.flat[i].axis('off')
     
     plt.tight_layout()
-    plt.show()
+    # plt.show()
 
 def display_single_image(image_tensor, title="Image"):
     """
@@ -260,7 +261,7 @@ def test():
 
     print("action sequence:  ", dataset.__getitem__(10)['action'])
     # print("agent_pos sequence:  ", dataset.__getitem__(0)['obs']['agent_pos'])
-    print("imgs dim: ", dataset.__getitem__(0)['obs']['image'])
+    print("imgs dim: ", dataset.__getitem__(0)['obs']['image'].shape)
     normalizer = dataset.get_normalizer(mode='limits')
 
     # print("normalizer stat: \n", normalizer.get_input_stats()['action'], normalizer.get_output_stats())
