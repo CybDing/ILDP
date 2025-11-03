@@ -216,7 +216,7 @@ def visualize_sequence_images(dataset, idx=0, max_frames=8):
             axes.flat[i].axis('off')
     
     plt.tight_layout()
-    # plt.show()
+    plt.show()
 
 def display_single_image(image_tensor, title="Image"):
     """
@@ -251,8 +251,8 @@ def test():
     zarr_path = '../data/train_data/pusht/pusht_train_0920.zarr'
     zarr_path = '../data/train_data/pusht/genesis_data_20251019_151046.zarr' 
     zarr_path = '../data/train_data/pusht/pusht_cchi_v7_replay.zarr'
+    zarr_path = '../data/train_data/pusht/pusht_1027_cleaned.zarr'
     zarr_path = '../data/train_data/pusht/merged_data_0925.zarr' 
-    zarr_path = '../data/train_data/pusht/genesis_data_20251027_004448.zarr'
     
     dataset = PushTImageDataset(zarr_path, horizon=16)
     print("Total sequences stored in Replay buffer: ", len(dataset))
@@ -265,7 +265,7 @@ def test():
     normalizer = dataset.get_normalizer(mode='limits')
 
     # print("normalizer stat: \n", normalizer.get_input_stats()['action'], normalizer.get_output_stats())
-    print(normalizer['action'].normalize(dataset.__getitem__(10)['action']))
+    print(dataset.__getitem__(10)['action'])
     print(normalizer.normalize({'action':(dataset.__getitem__(10)['action'])}))
 
     # Access final_intersection_ratio for episode 1
@@ -279,7 +279,7 @@ def test():
 
     # Add visualization after existing test code
     # print("\nVisualizing images...")
-    visualize_sequence_images(dataset, idx=40, max_frames=16)
+    visualize_sequence_images(dataset, idx=1640, max_frames=16)
     
     # # Display a single frame
     # sample = dataset.__getitem__(-30)

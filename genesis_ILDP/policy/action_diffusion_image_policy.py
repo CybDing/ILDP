@@ -17,6 +17,7 @@ from genesis_ILDP.model.common.modules import RandomShiftsAug, RandomPosShifter
 
 from diffusion_policy.model.common.normalizer import LinearNormalizer
 from genesis_ILDP.model.vision.crop_randomizer import CropRandomizer
+from genesis_ILDP.model.common.workspace_limiter import WorkspaceLimiter
 
 
 class ActionDiffusionImagePolicy(BaseImagePolicy):
@@ -29,7 +30,7 @@ class ActionDiffusionImagePolicy(BaseImagePolicy):
                  imgs_encoding_net: img_encoding_cnn,
                  conditioned_unet: Unet,
                  noise_scheduler: NoiseScheduler,
-                 normalizer: LinearNormalizer=None,
+                 normalizer: LinearNormalizer,
 
                  diff_steps: int = 100,
                  obs_steps: int = 2,
@@ -40,20 +41,14 @@ class ActionDiffusionImagePolicy(BaseImagePolicy):
                  noise_intensity: float = 1.0,
 
                  use_ddpm = True,
-                 ddim_steps: int = None,
+                 ddim_steps: int = 100,
 
-                 randn_clip_value: float | tuple | None = 5.0,
-                 denoised_clip_value: float | tuple | None = 10.0,
-                 action_clip_value: float | tuple | None = None,
+                 randn_clip_value: float | tuple | None = None,
+                 denoised_clip_value: float | tuple | None = None,
 
-                 # Alternative: specify action clip bounds directly (cleaner for config)
-                 action_x_min: float | None = None,
-                 action_x_max: float | None = None,
-                 action_y_min: float | None = None,
-                 action_y_max: float | None = None,
-
-                 shift_augmenter: RandomShiftsAug = None,
-                 pos_shifter: RandomPosShifter = None,
+                 shift_augmenter: RandomShiftsAug | None = None,
+                 pos_shifter: RandomPosShifter | None = None,
+                 workspace_limiter: WorkspaceLimiter | None = None,
 
                  **kwargs):
         super().__init__()
@@ -79,19 +74,13 @@ class ActionDiffusionImagePolicy(BaseImagePolicy):
         self.randn_clip_value = randn_clip_value
         self.denoised_clip_value = denoised_clip_value
 
-        # Build action_clip_value from individual bounds if provided
-        if action_clip_value is None and all(v is not None for v in [action_x_min, action_x_max, action_y_min, action_y_max]):
-            # User provided individual bounds, construct the tuple
-            self.action_clip_value = ([action_x_min, action_y_min], [action_x_max, action_y_max])
-        else:
-            self.action_clip_value = action_clip_value
-
         self.cropper = cropper
         if cropper is None: self.enable_crop = False
         else: self.enable_crop = True
 
         self.shift_augmenter = shift_augmenter
         self.pos_shifter = pos_shifter
+        self.workspace_limiter = workspace_limiter
 
         self.imgs_encoding_net = imgs_encoding_net
 
@@ -120,15 +109,10 @@ class ActionDiffusionImagePolicy(BaseImagePolicy):
         print(f"- Horizon: {horizon}")
         print(f"- Diffusion steps: {diff_steps}")
         print(f"- Observation steps: {obs_steps}")
-        print(f"- Clip settings: randn={self.randn_clip_value}, denoised={self.denoised_clip_value}, action={self.action_clip_value}")
+        print(f"- Clip settings: randn={self.randn_clip_value}, denoised={self.denoised_clip_value}")
 
 
     def _clip_tensor(self, x: torch.Tensor, clip_value):
-        """Clamp tensor x by clip_value if provided.
-        - If clip_value is a scalar (float/int): clamp to [-clip_value, +clip_value]
-        - If clip_value is a tuple/list of (min, max): clamp to [min, max]
-        - If clip_value is None: return x unchanged
-        """
         if clip_value is None:
             return x
         if isinstance(clip_value, (tuple, list)) and len(clip_value) == 2:
@@ -139,28 +123,6 @@ class ActionDiffusionImagePolicy(BaseImagePolicy):
         except Exception:
             return x
         return torch.clamp(x, min=-v, max=v)
-
-    def _get_action_clip_bounds(self, device, dtype):
-        """Expect action_clip_value as (min_list, max_list), each length == action_dim.
-        Returns tensors shaped (1, 1, Da) for broadcasting.
-
-        action_clip_value should be: ([x_min, y_min, ...], [x_max, y_max, ...])
-        """
-        v = self.action_clip_value
-        if v is None:
-            return None, None
-
-        # Ensure it's a tuple/list of length 2
-        if not (isinstance(v, (tuple, list)) and len(v) == 2):
-            raise ValueError(f"action_clip_value must be (min_list, max_list), got type={type(v)}, value={v}")
-
-        min_list, max_list = v
-        Da = self.action_dim
-        min_arr = torch.as_tensor(min_list, device=device, dtype=dtype)
-        max_arr = torch.as_tensor(max_list, device=device, dtype=dtype)
-        if min_arr.numel() != Da or max_arr.numel() != Da:
-            raise ValueError(f"Length of min/max must equal action_dim={Da}, got {min_arr.numel()}/{max_arr.numel()}")
-        return min_arr.view(1, 1, Da), max_arr.view(1, 1, Da)
 
     def _apply_crop(self, images: torch.Tensor, training: bool = True, generator=None) -> torch.Tensor:
         if not self.enable_crop or self.cropper is None:
@@ -222,10 +184,16 @@ class ActionDiffusionImagePolicy(BaseImagePolicy):
         device = next(self.parameters()).device
 
         # Generator device must match tensor device (MPS/CUDA/CPU)
-        if generator is not None and generator.device != device:
-            new_generator = torch.Generator(device=device)
-            new_generator.set_state(generator.get_state())
-            generator = new_generator
+        if generator is not None:
+            if generator.device != device:
+                try:
+                    new_generator = torch.Generator(device=device)
+                    new_generator.set_state(generator.get_state())
+                    generator = new_generator
+                except Exception as e:
+                    print(f"[WARNING] Failed to transfer generator to device {device}: {e}")
+                    print(f"[WARNING] Setting generator=None to avoid potential issues")
+                    generator = None
 
         nobs = self.normalizer.normalize({
             'image': imgs.to(device),
@@ -333,7 +301,8 @@ class ActionDiffusionImagePolicy(BaseImagePolicy):
         batch_size = nimgs.shape[0]
 
         # Sample random timestep and noise
-        random_t = torch.randint(1, self.diff_steps, (batch_size,), device=action.device)
+        # Note: generator is not used in compute_loss to ensure proper randomization during training
+        random_t = torch.randint(1, self.diff_steps+1, (batch_size,), device=action.device)
         random_noise = torch.randn(action.shape, device=action.device, dtype=action.dtype)
         random_noise = self._clip_tensor(random_noise, self.randn_clip_value)
 
@@ -371,7 +340,7 @@ class ActionDiffusionImagePolicy(BaseImagePolicy):
         if recording_diffusion:
             action_buffer = [predicted_trajs.clone()] # snapshot (B, horizons, Da)           
 
-        for step_idx, t in enumerate(reversed(range(1, self.diff_steps))):
+        for step_idx, t in enumerate(reversed(range(1, self.diff_steps+1))):
             # Time encoding
             t_features = torch.stack([self.time_encoding(t).to(device=imgs.device)
                                     for _ in range(batch_size)], dim=0)
@@ -412,15 +381,14 @@ class ActionDiffusionImagePolicy(BaseImagePolicy):
         action_dict = {"action": predicted_trajs}
         action_unnormalized = self.normalizer.unnormalize(action_dict)
         predicted_trajs_unnormalized = action_unnormalized["action"]
-        # Optional: clamp final actions in real action space (support per-dim bounds)
-        if self.action_clip_value is not None:
-            amin, amax = self._get_action_clip_bounds(predicted_trajs_unnormalized.device, predicted_trajs_unnormalized.dtype)
-            predicted_trajs_unnormalized = torch.clamp(predicted_trajs_unnormalized, min=amin, max=amax)
+
+        if self.workspace_limiter is not None:
+            predicted_trajs_unnormalized = self.workspace_limiter.clip(predicted_trajs_unnormalized)
 
         # Add constant dimension (0.27) to the end
         # predicted_trajs_unnormalized shape: (batch_size, horizon, action_dim)
         batch_size, horizon, action_dim = predicted_trajs_unnormalized.shape
-        const_dim = torch.full((batch_size, horizon, 1), 0.25,
+        const_dim = torch.full((batch_size, horizon, 1), 0.27,
                               device=predicted_trajs_unnormalized.device,
                               dtype=predicted_trajs_unnormalized.dtype)
         predicted_trajs_with_const = torch.cat([predicted_trajs_unnormalized, const_dim], dim=-1)
@@ -501,9 +469,9 @@ class ActionDiffusionImagePolicy(BaseImagePolicy):
         action_dict = {"action": predicted_trajs}
         action_unnormalized = self.normalizer.unnormalize(action_dict)
         predicted_trajs_unnormalized = action_unnormalized["action"]
-        if self.action_clip_value is not None:
-            amin, amax = self._get_action_clip_bounds(predicted_trajs_unnormalized.device, predicted_trajs_unnormalized.dtype)
-            predicted_trajs_unnormalized = torch.clamp(predicted_trajs_unnormalized, min=amin, max=amax)
+
+        if self.workspace_limiter is not None:
+            predicted_trajs_unnormalized = self.workspace_limiter.clip(predicted_trajs_unnormalized)
         
         # Add constant dimension (0.27) to the end
         # predicted_trajs_unnormalized shape: (batch_size, horizon, action_dim)

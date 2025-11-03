@@ -103,6 +103,12 @@ class TrainActionDiffusionImageWorkspace(BaseWorkspace):
             generator_device=generator_device
         )
 
+        # Debug flag: disable generator for evaluation/inference only (not training)
+        self.use_generator = cfg.training.get('use_generator', True)
+        if not self.use_generator:
+            print("[DEBUG] Generator disabled for evaluation/inference (use_generator=False)")
+            print("[DEBUG] Training will still use generator for reproducibility")
+
         def worker_init_fn(worker_id: int):
             """Ensure each DataLoader worker uses a deterministic RNG sequence."""
             if worker_seed_strategy == 'offset':
@@ -350,8 +356,13 @@ class TrainActionDiffusionImageWorkspace(BaseWorkspace):
                     try:
                         print(f"Running rollout evaluation at epoch {self.epoch}")
 
-                        eval_generator = torch.Generator(device=device)
-                        eval_generator.manual_seed(cfg.training.seed)
+                        # Debug flag: optionally disable generator for evaluation
+                        if self.use_generator:
+                            eval_generator = torch.Generator(device=device)
+                            eval_generator.manual_seed(cfg.training.seed)
+                        else:
+                            eval_generator = None
+                            print("[DEBUG] Running evaluation without generator")
 
                         runner_log = env_runner.run(policy, generator=eval_generator, wandb_run=wandb_run)
                         # runner_log is JSON-safe (no videos), merge into step_log
@@ -399,8 +410,13 @@ class TrainActionDiffusionImageWorkspace(BaseWorkspace):
                                 'agent_pos': obs_dict['agent_pos'][:, :n_obs_steps]
                             }
 
-                            sample_generator = torch.Generator(device=device)
-                            sample_generator.manual_seed(cfg.training.seed)
+                            # Debug flag: optionally disable generator for sampling test
+                            if self.use_generator:
+                                sample_generator = torch.Generator(device=device)
+                                sample_generator.manual_seed(cfg.training.seed)
+                            else:
+                                sample_generator = None
+                                print("[DEBUG] Running sampling test without generator")
 
                             result = policy.predict_action(obs_dict_sliced, generator=sample_generator)
                             pred_action = result['action_pred']

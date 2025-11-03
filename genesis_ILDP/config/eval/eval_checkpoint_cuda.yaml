@@ -1,7 +1,7 @@
 # checkpoint_path: /Users/ding/Downloads/checkpoints/checkpoints-old.ckpt # /home/jiaoda/LeqiDing/ILDP-main/genesis_ILDP/data/checkpoints/epoch=0400-test_mean_score=6.454.ckpt
-checkpoint_path: ../data/checkpoints/epoch=0250-test_mean_score=4.094.ckpt
+checkpoint_path: ../data/checkpoints/epoch=0250-test_mean_score=1.555.ckpt
 
-output_dir: ../data/eval/bs64fullDS/  # Output directory (null = use Hydra's auto output dir)
+output_dir: ../data/eval/bs64new-no-pos-shifter-without-limit/  # Output directory (null = use Hydra's auto output dir)
 confirm_overwrite: true  # Ask for confirmation before overwriting existing output
 
 # device: cuda:0
@@ -48,15 +48,17 @@ overrides:
     device: cuda:0
   
   policy: 
-    use_time_mlp_encoding: false  # match current model setting with mlp layers as default
-
+      action_x_min: -0.8
+      action_x_max: -0.
+      action_y_min: 0.
+      action_y_max: 0.8
   task:
     env_runner:
       n_test: 1
       n_train: 0
       device: cuda:0
       show_interactive_viewer: false  # Show the interactive viewer on mac
-      output_dir: ../data/eval/bs64fullDS/media/  # Specify media output dir for videos
+      output_dir: ../data/eval/bs64new-no-pos-shifter-without-limit/media/  # Specify media output dir for videos
 
 # Example overrides
 # overrides:

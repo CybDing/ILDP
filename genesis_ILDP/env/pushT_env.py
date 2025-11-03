@@ -18,6 +18,7 @@ from copy import deepcopy
 
 from genesis_ILDP.utils.cuda import *
 from genesis_ILDP.config.env_config import *
+from genesis_ILDP.model.common.spawn_circular_generator import SpawnCircularSampler
 from shapely.geometry import Polygon
 
 class PushTEnv(gym.Env):
@@ -25,8 +26,8 @@ class PushTEnv(gym.Env):
     metadata = {"render.mode": ["rgb_array"], "video.frames_per_second": 10}
 
     def __init__(self,
-                 sim_hz = 100, 
-                 control_hz = 10, 
+                 sim_hz = 100,
+                 control_hz = 10,
                  render_size=(128, 128),
                  xlim=.2,
                  ylim=.2,
@@ -36,9 +37,12 @@ class PushTEnv(gym.Env):
                  show_fps = True,
                  device = None,
                  done_ratio = 0.7,
-                 spawn_center=(-0.3, 0.3),  # Center of spawn region (x, y)
-                 spawn_range_scale=0.6,      # Scale factor for spawn range (1.0 = use xlim/ylim)
+                 spawn_center=(-0.3, 0.3),
+                 spawn_range_scale=0.6,
                  is_collecting_data = False,
+                 spawn_sampler = None,
+                 spawn_mode = 'uniform',
+                 circular_sampler_config = None,
                  ):
 
         self.render_size = render_size
@@ -63,6 +67,21 @@ class PushTEnv(gym.Env):
         self.done_ratio = done_ratio
         self.spawn_center = spawn_center
         self.spawn_range_scale = spawn_range_scale
+        self.spawn_mode = spawn_mode
+        self.circular_sampler_config = circular_sampler_config
+
+        if spawn_sampler is not None:
+            self.spawn_sampler = spawn_sampler
+        elif spawn_mode == 'uniform':
+            self.spawn_sampler = self._default_spawn_sampler
+        elif spawn_mode == 'circular':
+            if circular_sampler_config is None:
+                raise ValueError("circular_sampler_config is required when spawn_mode='circular'")
+            self.circular_sampler_instance = SpawnCircularSampler(**circular_sampler_config)
+            self.spawn_sampler = self._circular_spawn_adapter
+        else:
+            raise ValueError(f"Unknown spawn_mode: {spawn_mode}")
+
         self.home_pos = None
 
         self.ini_delta_dis: Union[float, np.ndarray] = 0.0
@@ -254,7 +273,7 @@ class PushTEnv(gym.Env):
         self.device = gs.device
 
     def seed(self, seed=None):
-        if self._seed is None: # generate system level seed
+        if self._seed is None:
             self._seed = np.random.randint(0, 25536)
             self.np_random_generators = None
         if seed is not None:
@@ -264,76 +283,88 @@ class PushTEnv(gym.Env):
             self.env_seed = seed
             self.np_random_generators = [np.random.default_rng(s) for s in seed]
 
+    def _default_spawn_sampler(self, rng, env_idx):
+        x_center, y_center = self.spawn_center
+        x_span = float(self.block_lim['xlim']) * self.spawn_range_scale
+        y_span = float(self.block_lim['ylim']) * self.spawn_range_scale
+        min_xy_sep = 0.12
+        min_ang_sep = np.deg2rad(20.0)
+        max_tries = 64
+
+        def sample_xy():
+            x = x_center - x_span + rng.random() * (2.0 * x_span)
+            y = y_center - y_span + rng.random() * (2.0 * y_span)
+            return x, y
+
+        block_x, block_y = sample_xy()
+        block_z = 0.06
+        block_angle = rng.random() * 2.0 * np.pi
+
+        for _ in range(max_tries):
+            target_x, target_y = sample_xy()
+            if np.hypot(target_x - block_x, target_y - block_y) >= min_xy_sep:
+                break
+        else:
+            dx, dy = (x_center - block_x), (y_center - block_y)
+            n = np.hypot(dx, dy) + 1e-6
+            target_x = block_x + (dx / n) * min_xy_sep
+            target_y = block_y + (dy / n) * min_xy_sep
+
+        target_z = 0.0
+        target_angle = rng.random() * 2.0 * np.pi
+
+        if min_ang_sep > 0:
+            for _ in range(max_tries):
+                ang_diff = np.arctan2(np.sin(target_angle - block_angle), np.cos(target_angle - block_angle))
+                if np.abs(ang_diff) >= min_ang_sep:
+                    break
+                target_angle = rng.random() * 2.0 * np.pi
+
+        return {
+            'block_pos': [block_x, block_y, block_z],
+            'block_angle': block_angle,
+            'target_pos': [target_x, target_y, target_z],
+            'target_angle': target_angle
+        }
+
+    def _circular_spawn_adapter(self, rng, env_idx):
+        result = self.circular_sampler_instance.sample(sample_counts=1, sample_generator=rng, max_retries=64)
+
+        block_pos_2d = result['block_pos'][0]
+        target_pos_2d = result['target_pos'][0]
+
+        return {
+            'block_pos': [block_pos_2d[0], block_pos_2d[1], 0.06],
+            'block_angle': rng.random() * 2.0 * np.pi,
+            'target_pos': [target_pos_2d[0], target_pos_2d[1], 0.0],
+            'target_angle': rng.random() * 2.0 * np.pi
+        }
+
 
     def reset_idx(self, envs_idx: torch.Tensor) -> Dict[str, torch.Tensor]:
-        """
-        Args:
-            envs_idx: torch.Tensor
-        Returns:
-            observation: Dict with torch tensors
-        """
         num_reset = envs_idx.shape[0]
         if num_reset == 0:
             return
-    
+
         block_positions: List[List[float]] = []
         target_positions: List[List[float]] = []
         block_angles: List[float] = []
         target_angles: List[float] = []
-        
+
         for env_idx in envs_idx:
-            env_idx_int = int(env_idx)  
-            
+            env_idx_int = int(env_idx)
+
             if hasattr(self, 'np_random_generators'):
                 rng = self.np_random_generators[env_idx_int]
             else:
                 raise ValueError("ENV-LEVEL seeds have not been defined!")
-            
-            x_center, y_center = self.spawn_center
-            x_span = float(self.block_lim['xlim']) * self.spawn_range_scale
-            y_span = float(self.block_lim['ylim']) * self.spawn_range_scale
-            min_xy_sep = 0.12                        # meters, this effect the model performance greatly
-            min_ang_sep = np.deg2rad(20.0)           # could set to zero 
-            max_tries = 64
 
-            def sample_xy():
-                # Sample uniformly in region: [center - span, center + span]
-                x = x_center - x_span + rng.random() * (2.0 * x_span)
-                y = y_center - y_span + rng.random() * (2.0 * y_span)
-                return x, y
+            spawn_result = self.spawn_sampler(rng, env_idx_int)
 
-            block_x, block_y = sample_xy()
-            block_z = 0.06  # Fixed height
-            block_angle = rng.random() * 2.0 * np.pi   # [0, 2π)
-
-            # Sample target with min XY separation
-            for _ in range(max_tries):
-                target_x, target_y = sample_xy()
-                if np.hypot(target_x - block_x, target_y - block_y) >= min_xy_sep:
-                    break
-            else:
-                # Fallback: push target away along vector to band center
-                dx, dy = (x_center - block_x), (y_center - block_y)
-                n = np.hypot(dx, dy) + 1e-6
-                target_x = block_x + (dx / n) * min_xy_sep
-                target_y = block_y + (dy / n) * min_xy_sep
-
-            target_z = 0.0  # Marker height
-            target_angle = rng.random() * 2.0 * np.pi  # [0, 2π)
-
-            # Enforce angular separation (optional)
-            if min_ang_sep > 0:
-                for _ in range(max_tries):
-                    ang_diff = np.arctan2(np.sin(target_angle - block_angle), np.cos(target_angle - block_angle))
-                    if np.abs(ang_diff) >= min_ang_sep:
-                        break
-                    target_angle = rng.random() * 2.0 * np.pi
-
-            # Assign
-            block_positions.append([block_x, block_y, block_z])
-            target_positions.append([target_x, target_y, target_z])
-            block_angles.append(block_angle)
-            target_angles.append(target_angle)
+            block_positions.append(spawn_result['block_pos'])
+            target_positions.append(spawn_result['target_pos'])
+            block_angles.append(spawn_result['block_angle'])
+            target_angles.append(spawn_result['target_angle'])
     
         block_pos = torch.tensor(block_positions, device=gs.device, dtype=torch.float32)
         target_pos = torch.tensor(target_positions, device=gs.device, dtype=torch.float32)
