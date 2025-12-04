@@ -25,34 +25,33 @@ from collections import defaultdict
 from genesis_ILDP.policy.dummy_policy import DummyPolicy
 
 class PushTImageRunner(BaseImageRunner):
-    def __init__(self, 
+    def __init__(self,
                  output_dir,
-                 n_train = 50, # Using train seed 
+                 n_train = 50,
                  n_train_vis = 0,
-                 n_test = 10, # Using test seed
+                 n_test = 10,
                  n_test_vis = 10,
                  n_obs_steps = 2,
                  n_action_steps = 8,
-                 diff_steps = 100,  # Number of diffusion steps
+                 diff_steps = 100,
                  max_steps=200,
                  image_shape=(96, 96),
                  tqdm_interval_sec=1.0,
                  n_envs = None,
                  fps = 30,
                  device = 'cuda:0',
-                #  crf = 22, # video quality
                  enable_past_action=True,
                  train_start_seed = 0,
-                 test_start_seed = 5000, 
-                 # does not reach 100000 episodes
+                 test_start_seed = 5000,
                  enable_render = False,
                  max_envs_running = 3,
-                 done_ratio = 0.85, 
+                 done_ratio = 0.85,
                  episode_recording = False,
-                 video_dir = None,  
-                 spawn_center = (-0.3, 0.3), 
-                 spawn_range_scale = 0.65,
-                 show_interactive_viewer=False,  
+                 video_dir = None,
+                 spawn_mode = 'uniform',
+                 uniform_sampler_config = None,
+                 circular_sampler_config = None,
+                 show_interactive_viewer=False,
                  ):
         super().__init__(output_dir)
         if n_envs is None:
@@ -171,10 +170,11 @@ class PushTImageRunner(BaseImageRunner):
                         render_size=image_shape,
                         fps = fps,
                         show_fps=False,
-                        device=device, 
-                        done_ratio=done_ratio, 
-                        spawn_center = spawn_center, 
-                        spawn_range_scale = spawn_range_scale, 
+                        device=device,
+                        done_ratio=done_ratio,
+                        spawn_mode = spawn_mode,
+                        uniform_sampler_config = uniform_sampler_config,
+                        circular_sampler_config = circular_sampler_config,
                     ),
                 n_obs_steps=n_obs_steps,
                 n_action_steps=n_action_steps,

@@ -22,7 +22,6 @@ from genesis_ILDP.model.common.spawn_circular_generator import SpawnCircularSamp
 from shapely.geometry import Polygon
 
 class PushTEnv(gym.Env):
-    # TODO close(), 
     metadata = {"render.mode": ["rgb_array"], "video.frames_per_second": 10}
 
     def __init__(self,
@@ -37,11 +36,10 @@ class PushTEnv(gym.Env):
                  show_fps = True,
                  device = None,
                  done_ratio = 0.7,
-                 spawn_center=(-0.3, 0.3),
-                 spawn_range_scale=0.6,
                  is_collecting_data = False,
                  spawn_sampler = None,
                  spawn_mode = 'uniform',
+                 uniform_sampler_config = None,
                  circular_sampler_config = None,
                  ):
 
@@ -65,10 +63,19 @@ class PushTEnv(gym.Env):
         self.show_fps = show_fps
         self.device = None
         self.done_ratio = done_ratio
-        self.spawn_center = spawn_center
-        self.spawn_range_scale = spawn_range_scale
         self.spawn_mode = spawn_mode
-        self.circular_sampler_config = circular_sampler_config
+
+        if uniform_sampler_config is None:
+            uniform_sampler_config = {
+                "center_x": -0.3,
+                "center_y": 0.3,
+                "x_range": 0.12,
+                "y_range": 0.12,
+                "min_xy_sep": 0.12,
+                "min_ang_sep": 20.0,
+                "max_tries": 64
+            }
+        self.uniform_sampler_config = uniform_sampler_config
 
         if spawn_sampler is not None:
             self.spawn_sampler = spawn_sampler
@@ -76,7 +83,13 @@ class PushTEnv(gym.Env):
             self.spawn_sampler = self._default_spawn_sampler
         elif spawn_mode == 'circular':
             if circular_sampler_config is None:
-                raise ValueError("circular_sampler_config is required when spawn_mode='circular'")
+                circular_sampler_config = {
+                    "radius_inner": 0.35,
+                    "radius_outer": 0.5,
+                    "angle_min": 20/180*np.pi + np.pi/2,
+                    "angle_max": np.pi - 20/180*np.pi,
+                    "min_central_sep": 0.1,
+                }
             self.circular_sampler_instance = SpawnCircularSampler(**circular_sampler_config)
             self.spawn_sampler = self._circular_spawn_adapter
         else:
@@ -284,16 +297,17 @@ class PushTEnv(gym.Env):
             self.np_random_generators = [np.random.default_rng(s) for s in seed]
 
     def _default_spawn_sampler(self, rng, env_idx):
-        x_center, y_center = self.spawn_center
-        x_span = float(self.block_lim['xlim']) * self.spawn_range_scale
-        y_span = float(self.block_lim['ylim']) * self.spawn_range_scale
-        min_xy_sep = 0.12
-        min_ang_sep = np.deg2rad(20.0)
-        max_tries = 64
+        x_center = self.uniform_sampler_config.get('center_x', -0.3)
+        y_center = self.uniform_sampler_config.get('center_y', 0.3)
+        x_range = self.uniform_sampler_config.get('x_range', 0.24)
+        y_range = self.uniform_sampler_config.get('y_range', 0.24)
+        min_xy_sep = self.uniform_sampler_config.get('min_xy_sep', 0.12)
+        min_ang_sep = np.deg2rad(self.uniform_sampler_config.get('min_ang_sep', 20.0))
+        max_tries = self.uniform_sampler_config.get('max_tries', 64)
 
         def sample_xy():
-            x = x_center - x_span + rng.random() * (2.0 * x_span)
-            y = y_center - y_span + rng.random() * (2.0 * y_span)
+            x = x_center - x_range + rng.random() * (2.0 * x_range)
+            y = y_center - y_range + rng.random() * (2.0 * y_range)
             return x, y
 
         block_x, block_y = sample_xy()
@@ -525,6 +539,35 @@ class PushTEnv(gym.Env):
         if self.render_cache is None:
             self._get_obs()
         return self.render_cache
+
+    def close(self):
+        cam = getattr(self, "cam", None)
+        if cam is not None:
+            stop_recording = getattr(cam, "stop_recording", None)
+            if callable(stop_recording):
+                try:
+                    stop_recording()
+                except Exception:
+                    pass
+
+        if self.scene is not None:
+            destroy = getattr(self.scene, "destroy", None)
+            if callable(destroy):
+                try:
+                    destroy()
+                except Exception:
+                    pass
+
+        try:
+            glfw.terminate()
+        except Exception:
+            pass
+
+        self.scene = None
+        self.cam = None
+        self.render_cache = None
+        self.is_init = False
+        super().close()
     
     
     def start_recording(self, ):

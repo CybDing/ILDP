@@ -45,6 +45,7 @@ class ActionDiffusionImagePolicy(BaseImagePolicy):
 
                  randn_clip_value: float | tuple | None = None,
                  denoised_clip_value: float | tuple | None = None,
+                 noise_clip_percentile: float | None = None,
 
                  shift_augmenter: RandomShiftsAug | None = None,
                  pos_shifter: RandomPosShifter | None = None,
@@ -73,6 +74,7 @@ class ActionDiffusionImagePolicy(BaseImagePolicy):
 
         self.randn_clip_value = randn_clip_value
         self.denoised_clip_value = denoised_clip_value
+        self.noise_clip_percentile = noise_clip_percentile
 
         self.cropper = cropper
         if cropper is None: self.enable_crop = False
@@ -109,7 +111,7 @@ class ActionDiffusionImagePolicy(BaseImagePolicy):
         print(f"- Horizon: {horizon}")
         print(f"- Diffusion steps: {diff_steps}")
         print(f"- Observation steps: {obs_steps}")
-        print(f"- Clip settings: randn={self.randn_clip_value}, denoised={self.denoised_clip_value}")
+        print(f"- Clip settings: randn={self.randn_clip_value}, denoised={self.denoised_clip_value}, noise_percentile={self.noise_clip_percentile}")
 
 
     def _clip_tensor(self, x: torch.Tensor, clip_value):
@@ -123,6 +125,13 @@ class ActionDiffusionImagePolicy(BaseImagePolicy):
         except Exception:
             return x
         return torch.clamp(x, min=-v, max=v)
+
+    def _clip_noise_by_percentile(self, noise: torch.Tensor, percentile: float):
+        """Clip noise values by percentile to improve stability."""
+        if percentile is None or percentile <= 0 or percentile >= 100:
+            return noise
+        threshold = torch.quantile(torch.abs(noise), percentile / 100.0)
+        return torch.clamp(noise, min=-threshold, max=threshold)
 
     def _apply_crop(self, images: torch.Tensor, training: bool = True, generator=None) -> torch.Tensor:
         if not self.enable_crop or self.cropper is None:
@@ -362,6 +371,7 @@ class ActionDiffusionImagePolicy(BaseImagePolicy):
 
                 noise = torch.randn(predicted_trajs.shape, device=predicted_trajs.device, dtype=predicted_trajs.dtype, generator=generator)
                 noise = self._clip_tensor(noise, self.randn_clip_value)
+                noise = self._clip_noise_by_percentile(noise, self.noise_clip_percentile)
                 predicted_trajs = mean + torch.sqrt(variance) * noise
                 predicted_trajs = self._clip_tensor(predicted_trajs, self.denoised_clip_value)
             else:

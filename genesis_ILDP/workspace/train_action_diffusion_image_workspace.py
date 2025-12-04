@@ -23,6 +23,7 @@ from genesis_ILDP.policy.action_diffusion_image_policy import ActionDiffusionIma
 from genesis_ILDP.dataset.base_dataset import BaseImageDataset
 from genesis_ILDP.env_runner.base_image_runner import BaseImageRunner
 from genesis_ILDP.utils.pytorch_util import dict_apply, optimizer_to
+from genesis_ILDP.utils.seed_util import SeedManager
 
 from diffusion_policy.common.checkpoint_util import TopKCheckpointManager
 from diffusion_policy.common.json_logger import JsonLogger
@@ -30,54 +31,6 @@ from genesis_ILDP.model.common.ema_model import EMAModel
 from diffusion_policy.model.common.lr_scheduler import get_scheduler
 
 OmegaConf.register_new_resolver("eval", eval, replace=True)
-
-def configure_seed(
-    seed: int,
-    deterministic: bool = False,
-    device: Optional[torch.device] = None,
-    generator_device: Optional[torch.device | str] = None,
-) -> torch.Generator:
-    """Configure global RNG state for reproducible training."""
-    random.seed(seed)
-    np.random.seed(seed)
-    torch.manual_seed(seed)
-
-    if torch.cuda.is_available():
-        torch.cuda.manual_seed_all(seed)
-
-    if getattr(torch, "mps", None) is not None and hasattr(torch.backends, "mps") and torch.backends.mps.is_available():
-        if hasattr(torch.mps, "manual_seed"):
-            torch.mps.manual_seed(seed)
-
-    if deterministic:
-        if hasattr(torch, "use_deterministic_algorithms"):
-            torch.use_deterministic_algorithms(True, warn_only=True)
-        if torch.backends.cudnn.is_available():
-            torch.backends.cudnn.deterministic = True
-            torch.backends.cudnn.benchmark = False
-    else:
-        if hasattr(torch, "use_deterministic_algorithms"):
-            torch.use_deterministic_algorithms(False)
-        if torch.backends.cudnn.is_available():
-            torch.backends.cudnn.deterministic = False
-            torch.backends.cudnn.benchmark = True
-
-    if generator_device is None:
-        generator_device = device or "cpu"
-
-    # Make a device-matched Generator (supports cpu, cuda, mps)
-    gen_dev = generator_device if isinstance(generator_device, torch.device) else torch.device(generator_device)
-    try:
-        generator = torch.Generator(device=gen_dev)
-    except TypeError:
-        # Fallback for older PyTorch accepting only device types
-        generator = torch.Generator(device=gen_dev.type if gen_dev.type in ("cuda", "mps") else "cpu")
-    generator.manual_seed(seed)
-
-    if device is not None and device.type == "cuda" and not torch.cuda.is_available():
-        raise RuntimeError("Requested CUDA device but CUDA is not available.")
-
-    return generator
 
 class TrainActionDiffusionImageWorkspace(BaseWorkspace):
     """
@@ -94,60 +47,28 @@ class TrainActionDiffusionImageWorkspace(BaseWorkspace):
         deterministic = bool(cfg.training.get('deterministic', False))
         worker_seed_strategy = cfg.training.get('worker_seed_strategy', 'offset')
 
-        # Use the same device for the DataLoader generator as training (cuda/mps/cpu)
-        generator_device = device
-        self.generator = configure_seed(
-            seed,
-            deterministic,
-            device=device,
-            generator_device=generator_device
-        )
+        self.seed_manager = SeedManager(base_seed=seed)
+        self.seed_manager.set_global_seed(deterministic=deterministic)
+        self.generator = self.seed_manager.get_generator(device)
 
-        # Debug flag: disable generator for evaluation/inference only (not training)
         self.use_generator = cfg.training.get('use_generator', True)
-        if not self.use_generator:
-            print("[DEBUG] Generator disabled for evaluation/inference (use_generator=False)")
-            print("[DEBUG] Training will still use generator for reproducibility")
-
-        def worker_init_fn(worker_id: int):
-            """Ensure each DataLoader worker uses a deterministic RNG sequence."""
-            if worker_seed_strategy == 'offset':
-                worker_seed = seed + worker_id
-            elif worker_seed_strategy == 'independent':
-                worker_seed = seed
-            else:
-                raise ValueError(f"Unknown worker_seed_strategy: {worker_seed_strategy}")
-            np.random.seed(worker_seed)
-            random.seed(worker_seed)
-            torch.manual_seed(worker_seed)
-
-        self.worker_init_fn = worker_init_fn
+        self.worker_init_fn = lambda worker_id: self.seed_manager.worker_init_fn(worker_id, worker_seed_strategy)
 
         self.model: ActionDiffusionImagePolicy = hydra.utils.instantiate(cfg.policy)
-        
+
         self.ema_model: ActionDiffusionImagePolicy = None
         if cfg.training.use_ema:
             self.ema_model = copy.deepcopy(self.model)
 
-        # configure training state - with debugging and fallbacks
-        self.optimizer = hydra.utils.instantiate(
-                cfg.optimizer, params=self.model.parameters())
-    
+        self.optimizer = hydra.utils.instantiate(cfg.optimizer, params=self.model.parameters())
         self.global_step = 0
         self.epoch = 0
 
         print(f"ActionDiffusionImagePolicy workspace initialized:")
-        print(f"- Model type: {type(self.model).__name__}")
+        print(f"- Model: {type(self.model).__name__}")
         print(f"- Device: {cfg.training.device}")
         print(f"- Use EMA: {cfg.training.use_ema}")
-        print(f"- Seed: {seed}")
-
-        # Print reproducibility information
-        print("\n=== Reproducibility Configuration ===")
-        print(f"Deterministic mode: {'ENABLED' if deterministic else 'DISABLED'}")
-        print("Global seed:", seed)
-        print("DataLoader worker seed strategy:", worker_seed_strategy)
-        print("=====================================\n")
+        print(f"- Seed: {seed} ({'deterministic' if deterministic else 'non-deterministic'})")
 
     def run(self):
         cfg = copy.deepcopy(self.cfg)
@@ -356,13 +277,7 @@ class TrainActionDiffusionImageWorkspace(BaseWorkspace):
                     try:
                         print(f"Running rollout evaluation at epoch {self.epoch}")
 
-                        # Debug flag: optionally disable generator for evaluation
-                        if self.use_generator:
-                            eval_generator = torch.Generator(device=device)
-                            eval_generator.manual_seed(cfg.training.seed)
-                        else:
-                            eval_generator = None
-                            print("[DEBUG] Running evaluation without generator")
+                        eval_generator = self.seed_manager.get_generator(device) if self.use_generator else None
 
                         runner_log = env_runner.run(policy, generator=eval_generator, wandb_run=wandb_run)
                         # runner_log is JSON-safe (no videos), merge into step_log
@@ -410,13 +325,7 @@ class TrainActionDiffusionImageWorkspace(BaseWorkspace):
                                 'agent_pos': obs_dict['agent_pos'][:, :n_obs_steps]
                             }
 
-                            # Debug flag: optionally disable generator for sampling test
-                            if self.use_generator:
-                                sample_generator = torch.Generator(device=device)
-                                sample_generator.manual_seed(cfg.training.seed)
-                            else:
-                                sample_generator = None
-                                print("[DEBUG] Running sampling test without generator")
+                            sample_generator = self.seed_manager.get_generator(device) if self.use_generator else None
 
                             result = policy.predict_action(obs_dict_sliced, generator=sample_generator)
                             pred_action = result['action_pred']

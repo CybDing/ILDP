@@ -130,6 +130,20 @@ class ActionDiffusionImagePolicyReference(BaseImagePolicy):
         # Store imagenet_norm flag for later use in set_normalizer
         self.imagenet_norm = imagenet_norm
 
+        print(f"------- ActionDiffusionImagePolicyReference initialized: -------")
+        print(f"- Action dim: {self.action_dim}")
+        print(f"- Horizon: {horizon}")
+        print(f"- Diffusion steps: {diff_steps}")
+        print(f"- Observation steps: {n_obs_steps}")
+        print(f"- Vision backbone: {vision_backbone}")
+        print(f"- Beta schedule: {beta_schedule}")
+        print(f"- Using diffusion_policy reference implementation")
+
+    @property
+    def device(self):
+        """Get the device of the model parameters."""
+        return next(self.parameters()).device
+
     def set_normalizer(self, normalizer: LinearNormalizer):
         """
         Set normalizer from training workspace.

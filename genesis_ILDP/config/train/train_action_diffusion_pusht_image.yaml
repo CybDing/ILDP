@@ -57,8 +57,10 @@ policy:
   action_y_min: 0.
   action_y_max: 0.8
 
+  # === NOISE CLIPPING SETTINGS ===
   randn_clip_value: null
   denoised_clip_value: null
+  noise_clip_percentile: 95        # Clip noise by 95th percentile for stability (null to disable)
 
   cropper: null # set null to disable cropping
     # _target_: genesis_ILDP.model.vision.crop_randomizer.CropRandomizer
@@ -128,7 +130,7 @@ task:
   dataset:
     _target_: genesis_ILDP.dataset.pusht_image_dataset.PushTImageDataset
     # zarr_path: ../data/train_data/pusht/pusht_cchi_v7_replay.zarr
-    zarr_path: ../data/train_data/pusht/pusht_1027_cleaned.zarr
+    zarr_path: ../data/train_data/pusht/merged_data_0925.zarr
     horizon: ${horizon}
     pad_before: ${eval:'${n_obs_steps}-1'}     # 1
     pad_after: ${eval:'${n_action_steps}-1'}   # 7
@@ -147,26 +149,33 @@ task:
     n_obs_steps: ${n_obs_steps}
     n_test: 60
     n_test_vis: 8
-    n_train: 10  
+    n_train: 10
     n_train_vis: 2
-    # past_action: ${past_action_visible}
     test_start_seed: 50000
     train_start_seed: 0
     n_envs: null
     enable_past_action: False
     enable_render: True
     done_ratio: 0.7
-    spawn_center: [-0.3, 0.3]
-    spawn_range_scale: 0.5
+    spawn_mode: 'uniform'
+    uniform_sampler_config:
+      center_x: -0.3
+      center_y: 0.3
+      x_range: 0.1
+      y_range: 0.1
+      min_xy_sep: 0.12
+      min_ang_sep: 20.0
+      max_tries: 64
+    circular_sampler_config: null
 
-# === TRAINING CONFIGURATION ===  
+# === TRAINING CONFIGURATION ===
 training:
-  seed: 42
+  seed: 42                     # Base seed for all random number generators
   device: cuda:0
-  num_epochs: 500             # Standard training epochs
-  batch_size: 64               # Batch size
-  deterministic: true          # Enable deterministic algorithms for reproducibility
-  worker_seed_strategy: offset # offset | independent (controls DataLoader worker seeding)
+  num_epochs: 500
+  batch_size: 64
+  deterministic: true
+  worker_seed_strategy: offset
   
   # Learning and optimization
   lr_scheduler: cosine

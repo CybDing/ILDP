@@ -78,40 +78,51 @@ task:
   # Dataset configuration (EXACT match to diffusion_policy)
   dataset:
     _target_: genesis_ILDP.dataset.pusht_image_dataset.PushTImageDataset
-    zarr_path: genesis_ILDP/data/train_data/merged_data_0925.zarr
+    zarr_path: ../data/train_data/pusht/merged_data_0925.zarr
     horizon: ${horizon}
     pad_before: ${eval:'${n_obs_steps}-1'}     # 1
     pad_after: ${eval:'${n_action_steps}-1'}   # 7
     seed: 42
-    val_ratio: 0.02              # 2% validation (NOT 5%!) - EXACT match to official
-    max_train_episodes: null     # Use full dataset (official uses 90 for standard PushT)
+    val_ratio: 0.05              # 5% validation to match your experiments
+    max_train_episodes: null     # Use full dataset
+    workspace_limits: null       # Will compute from data
 
-  # Environment runner (EXACT match to diffusion_policy)
+  # Environment runner (adapted to your setup)
   env_runner:
     _target_: genesis_ILDP.env_runner.pusht_image_runner.PushTImageRunner
     output_dir: ${multi_run.run_dir}
-    fps: 10                      # 10 FPS (NOT 30!) - EXACT match to official
-    max_steps: 300               # 300 steps (NOT 600!) - EXACT match to official
+    fps: 30                      # Match your environment settings
+    max_steps: 600               # Match your environment settings
     n_action_steps: ${n_action_steps}
     n_obs_steps: ${n_obs_steps}
-    n_test: 50                   # 50 test episodes - EXACT match to official
-    n_test_vis: 4                # 4 test visualizations - EXACT match to official
-    n_train: 6                   # 6 train episodes - EXACT match to official
-    n_train_vis: 2               # 2 train visualizations - EXACT match to official
-    test_start_seed: 100000      # Test seed 100000 - EXACT match to official
+    n_test: 60                   # Match your settings
+    n_test_vis: 8                # Match your settings
+    n_train: 10                  # Match your settings
+    n_train_vis: 2               # Match your settings
+    test_start_seed: 50000       # Match your settings
     train_start_seed: 0
     n_envs: null
     enable_past_action: false
     enable_render: true
     done_ratio: 0.7
+    spawn_mode: 'uniform'
+    uniform_sampler_config:
+      center_x: -0.3
+      center_y: 0.3
+      x_range: 0.1
+      y_range: 0.1
+      min_xy_sep: 0.12
+      min_ang_sep: 20.0
+      max_tries: 64
+    circular_sampler_config: null
 
-# === TRAINING CONFIGURATION (EXACT match to diffusion_policy) ===
+# === TRAINING CONFIGURATION ===
 training:
   seed: 42
-  device: cuda:1
-  num_epochs: 500            # LONG training (3050-8000 epochs in official configs)
-  batch_size: 64              # Batch size 64 (NOT 128!) - EXACT match to official
-  deterministic: true         # Enable deterministic algorithms for reproducibility
+  device: cuda:0                # Match your GPU setup
+  num_epochs: 500               # Match your training setup
+  batch_size: 64                # Batch size 64 for reference implementation
+  deterministic: true           # Enable deterministic algorithms for reproducibility
   worker_seed_strategy: offset
 
   # Learning and optimization (EXACT match)
@@ -119,9 +130,9 @@ training:
   lr_warmup_steps: 500        # 500 warmup steps
   gradient_accumulate_every: 1
 
-  # Checkpointing and evaluation (EXACT match)
+  # Checkpointing and evaluation
   checkpoint_every: 50        # Save checkpoint every 50 epochs
-  val_every: 1                # Validate EVERY epoch (NOT every 5!) - EXACT match
+  val_every: 5                # Validate every 5 epochs to match your setup
   rollout_every: 50           # Run environment rollout every 50 epochs
   sample_every: 5             # Sample predictions every 5 epochs
 
@@ -133,7 +144,7 @@ training:
   debug: false
   tqdm_interval_sec: 1.0
   use_ema: true               # CRITICAL: Use EMA with GroupNorm (not BatchNorm)
-  resume: true                # Enable resume - EXACT match to official
+  resume: false               # Set to false for fresh training
 
 # === OPTIMIZER CONFIGURATION (EXACT match to diffusion_policy) ===
 optimizer:
