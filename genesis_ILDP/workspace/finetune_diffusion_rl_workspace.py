@@ -30,10 +30,10 @@ import wandb
 import copy
 
 from genesis_ILDP.workspace.base_workspace import BaseWorkspace
-from genesis_ILDP.agent.FT_trajs_collector import TrajsCollector
-from genesis_ILDP.policy.FT_action_diffusion_image_policy import FTActionDiffusionImagePolicy
-from genesis_ILDP.model.rl.QNet import Critic
-from genesis_ILDP.model.rl.PPODiffusion import PPODiffusion
+from genesis_ILDP.agent.collector.traj_collector import TrajsCollector
+from genesis_ILDP.policy.finetune.finetune_action_diffusion_image_policy import FTActionDiffusionImagePolicy
+from genesis_ILDP.model.rl.critic import Critic
+from genesis_ILDP.agent.rl_agent.ppo_agent import PPODiffusion
 from genesis_ILDP.utils.pytorch_util import dict_apply
 
 

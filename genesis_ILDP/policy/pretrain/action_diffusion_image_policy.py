@@ -166,16 +166,17 @@ class ActionDiffusionImagePolicy(BaseImagePolicy):
     
     def _encoding_obs(self, img, agent_pos, training=True, generator=None) -> tuple:
         batch_size = img.shape[0]
+        # 1. concatenate the img and agent_pos over the first dim(batch dim)
         img = img.reshape(-1, *img.shape[-3:])
         agent_pos = agent_pos.reshape(-1, agent_pos.shape[-1])
-
+        # 2. apply the img cropping 
         img = self._apply_crop(img, training=training, generator=generator)
-
+        # 3. apply the encoding network to the obs
         img_encoded = self.imgs_encoding_net(img)
         if self.encode_agent_pos:
             agent_pos_encoded = self.pos_encoding(agent_pos)
         else: agent_pos_encoded = agent_pos
-
+        # 4. stack n_obs_steps encodings together to form feature vectors
         img_feature = img_encoded.reshape(batch_size, -1)
         agent_pos_feature = agent_pos_encoded.reshape(batch_size, -1)
 
@@ -349,6 +350,7 @@ class ActionDiffusionImagePolicy(BaseImagePolicy):
         if recording_diffusion:
             action_buffer = [predicted_trajs.clone()] # snapshot (B, horizons, Da)           
 
+        # diff_steps range(1 ~ diff_steps) [1 is the final_step]
         for step_idx, t in enumerate(reversed(range(1, self.diff_steps+1))):
             # Time encoding
             t_features = torch.stack([self.time_encoding(t).to(device=imgs.device)
@@ -404,7 +406,7 @@ class ActionDiffusionImagePolicy(BaseImagePolicy):
         predicted_trajs_with_const = torch.cat([predicted_trajs_unnormalized, const_dim], dim=-1)
 
         if not recording_diffusion:
-            return predicted_trajs_with_const
+            return predicted_trajs_with_const, None
         else:
             action_diffusion_buffer = torch.stack(action_buffer, dim=0).transpose(dim0=0, dim1=1)
             # (diff_steps + 1, cur_envs, horizons, Da) -> (cur_envs, diff_steps + 1, horizons, Da)

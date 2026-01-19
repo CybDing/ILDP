@@ -117,12 +117,16 @@ class state_world_model(nn.Module):
 
         self.world_model = MLP_backbone(input_dim=(state_dim + action_hidden_dims), hidden_dims=world_model_hidden_dims,
                                         output_dim=state_dim, activation=self.activation, device=device)
-        self.action_chunk_model = CNN1D_backbone(input_dim=action_dim, input_channel=action_horizon,
+        # CNN input: (B, action_dim, action_horizon) - action_dim as channels, action_horizon as seq_len
+        self.action_chunk_model = CNN1D_backbone(input_dim=action_horizon, input_channel=action_dim,
                                                  hidden_channels=action_chunk_model_channels, output_dim=action_hidden_dims,
                                                  strides=action_chunk_model_strides, device=device)
 
     def forward(self, prev_state, prev_action):
+        # prev_action: (B, action_horizon, action_dim)
         normalized_action = self.action_normalisation(prev_action)
+        # Transpose to (B, action_dim, action_horizon) for Conv1d
+        normalized_action = normalized_action.transpose(1, 2)
         action_hidden_vec = self.action_chunk_model(normalized_action)
         return self.world_model(torch.cat([prev_state, action_hidden_vec], dim=-1))
 

@@ -66,26 +66,26 @@ class FTActionDiffusionImagePolicy(ActionDiffusionImagePolicy):
         
         return action    
 
-    def _encoding_obs(self, img, agent_pos, training = True) -> tuple:
-        batch_size = img.shape[0]
-        # 1. concatenate the img and agent_pos over the first dim(batch dim)
-        img = img.reshape(-1, *img.shape[-3:])
-        agent_pos = agent_pos.reshape(-1, *agent_pos.shape[-2:])
-        # 2. apply the img cropping 
-        img = self._apply_crop(img, training=training) # training visual encoder use random crop 
-        # 3. apply the encoding network to the obs
-        img_encoded = self.imgs_encoding_net(img)
-        if self.encode_agent_pos: 
-            agent_pos_encoded = self.agent_pos_encoding(agent_pos)
-        else: agent_pos_encoded = agent_pos
-        # 4. stack n_obs_steps encodings together(over the first dim to form feature vectors)
-        img_feature = img_encoded.reshape(batch_size, -1)
-        agent_pos_feature = agent_pos_encoded.reshape(batch_size, -1)
+    # def _encoding_obs(self, img, agent_pos, training = True) -> tuple:
+    #     batch_size = img.shape[0]
+    #     # 1. concatenate the img and agent_pos over the first dim(batch dim)
+    #     img = img.reshape(-1, *img.shape[-3:])
+    #     agent_pos = agent_pos.reshape(-1, *agent_pos.shape[-1]) # fixed dim should be the last dim which is Dpos
+    #     # 2. apply the img cropping 
+    #     img = self._apply_crop(img, training=training) # training visual encoder use random crop 
+    #     # 3. apply the encoding network to the obs
+    #     img_encoded = self.imgs_encoding_net(img)
+    #     if self.encode_agent_pos: 
+    #         agent_pos_encoded = self.agent_pos_encoding(agent_pos)
+    #     else: agent_pos_encoded = agent_pos
+    #     # 4. stack n_obs_steps encodings together(over the first dim to form feature vectors)
+    #     img_feature = img_encoded.reshape(batch_size, -1)
+    #     agent_pos_feature = agent_pos_encoded.reshape(batch_size, -1)
 
-        return img_feature, agent_pos_feature
+    #     return img_feature, agent_pos_feature
 
     def get_logprob(self, obs_dict, chain_before:torch.Tensor, chain_next:torch.Tensor, 
-                    denoising_idx: torch.Tensor, isNorm_action = True, isNorm_obs = False # whether the obs and actions are being normalized or not 
+                    denoising_idx: torch.Tensor, isNorm_action = True, isNorm_obs = False # default action are normalized in replay buffer, while the obs is not 
                     ):
         # chain_before/next has already being extracted with the denoising idx
         image, agent_pos = self._process_obs(obs_dict=obs_dict, should_norm=not isNorm_obs)
@@ -113,7 +113,6 @@ class FTActionDiffusionImagePolicy(ActionDiffusionImagePolicy):
         # clip the variance to larger than the preset threshold
         # TODO check and implement inside the parent class 
 
-        # Note that when not clamping the variance here, it might cause the gradient to explode here
         variance = torch.clamp(variance, min=self.variance_threshold, max=None) 
         
         # return the log prob: same shape(B, Ta, Da)

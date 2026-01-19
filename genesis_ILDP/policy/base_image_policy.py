@@ -1,13 +1,16 @@
-### Copied From diffusion policy repository 
+### Modified from diffusion policy repository 
 
 from typing import Dict
 import torch
 import torch.nn as nn
-from diffusion_policy.model.common.module_attr_mixin import ModuleAttrMixin
+# from diffusion_policy.model.common.module_attr_mixin import ModuleAttrMixin
 from diffusion_policy.model.common.normalizer import LinearNormalizer
 
-class BaseImagePolicy(ModuleAttrMixin):
-    # init accepts keyword argument shape_meta, see config/task/*_image.yaml
+class BaseImagePolicy:
+    """
+    Base imagePolicy for robot to manipulate using imgs as input as well as other perceivable states
+    and useful information to predict future actions. 
+    """
 
     def predict_action(self, obs_dict: Dict[str, torch.Tensor]) -> Dict[str, torch.Tensor]:
         """
@@ -20,8 +23,6 @@ class BaseImagePolicy(ModuleAttrMixin):
     # reset state for stateful policies
     def reset(self):
         pass
-
-    # ========== training ===========
-    # no standard training interface except setting normalizer
+    
     def set_normalizer(self, normalizer: LinearNormalizer):
         raise NotImplementedError()

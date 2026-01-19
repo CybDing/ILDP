@@ -6,13 +6,6 @@ This script loads a pretrained checkpoint and continues training with a new data
 It reuses the workspace training loop from train_action_diffusion_image_workspace.py
 but replaces the dataset and normalizer.
 
-Usage:
-    python FT_DIFF_datasets.py --checkpoint path/to/model.ckpt --output_dir ./ft_output
-
-Example:
-    python FT_DIFF_datasets.py \
-        --checkpoint ./outputs/best_model.ckpt \
-        --output_dir ./outputs/finetuned_model
 """
 
 import sys
@@ -20,7 +13,7 @@ import os
 import pathlib
 import argparse
 import hydra
-from omegaconf import OmegaConf
+from omegaconf import OmegaConfimport
 import torch
 import dill
 import copy

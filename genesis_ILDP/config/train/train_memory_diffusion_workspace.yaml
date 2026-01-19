@@ -1,0 +1,369 @@
+# ============================================================================
+# MEMORY-BASED DIFFUSION POLICY TRAINING CONFIGURATION
+# ============================================================================
+# This config trains ActionDiffusionMemoryPolicy with MemoryNet for state tracking
+#
+# Key differences from standard diffusion policy:
+# 1. Uses MemoryNet to maintain latent state across time
+# 2. Trains with variable-length sequence chunks (min=2, max=16)
+# 3. Randomly switches between state-based and image-based conditioning
+# 4. World model predicts next state from previous state + action
+# 5. Gate mechanism fuses predicted state with current observation
+#
+# Training strategy:
+# - Initialize state from first observation image
+# - For each timestep: evolve state via world model + fuse with image
+# - Randomly use state (use_state_prob) or image as diffusion condition
+# - Encourages learning robust state representation
+# ============================================================================
+
+_target_: genesis_ILDP.workspace.train_memory_diffusion_workspace.TrainMemoryDiffusionWorkspace
+
+# === EXPERIMENT SETTINGS ===
+exp_name: "action_diffusion_memory_pusht_baseline"
+task_name: pusht_memory_ddpm
+name: train_memory_diffusion_workspace
+
+# === STANDARD DIFFUSION PARAMETERS ===
+horizon: 16                    # Predict 16 action steps
+n_action_steps: 8             # Execute first 8 actions
+n_obs_steps: 2                # Use 2 observation frames
+n_latency_steps: 0            # No latency compensation
+dataset_obs_steps: 2          # Dataset observation steps
+obs_as_global_cond: true      # Use observations as global conditioning
+past_action_visible: false    # Don't show past actions
+keypoint_visible_rate: 1.0    # Not used for image policy
+
+# === WORKSPACE LIMITS ===
+workspace_limits: null
+  # xlim: [-0.6, -0.15]
+  # ylim: [0.15, 0.6]
+
+# === SHAPE METADATA ===
+shape_meta:
+  action:
+    shape: [2]                 # 2D action space (x, y)
+  obs:
+    image:
+      shape: [3, 96, 96]       # RGB images 96x96
+      type: rgb
+    agent_pos:
+      shape: [2]               # 2D agent position
+      type: low_dim
+
+# === MEMORY POLICY CONFIGURATION ===
+policy:
+  _target_: genesis_ILDP.policy.action_diffusion_memory_policy.ActionDiffusionMemoryPolicy
+
+  # Shape and basic parameters
+  shape_meta: ${shape_meta}
+  horizon: ${horizon}
+  n_action_steps: ${n_action_steps}
+  n_obs_steps: ${n_obs_steps}
+  obs_steps: ${n_obs_steps}
+
+  # Diffusion parameters
+  diff_steps: 100              # Number of diffusion steps
+  use_ddpm: true               # Use DDPM sampling
+  ddim_steps: 100              # DDIM steps (if use_ddpm=false)
+
+  # Memory-specific parameters
+  use_state_prob: 0.5          # Probability of using state vs image during training
+                                # 0.5 = balanced training between state and image
+
+  # Noise clipping for stability
+  randn_clip_value: null       # Clip initial noise (null = no clipping)
+  denoised_clip_value: null    # Clip denoised output (null = no clipping)
+  noise_clip_percentile: 95    # Clip noise by percentile
+
+  # Action space limits (optional, for clipping)
+  # action_x_min: -0.8
+  # action_x_max: 0.0
+  # action_y_min: 0.0
+  # action_y_max: 0.8
+
+  # Cropper (disabled for simplicity)
+  cropper: null
+
+  # Data augmentation
+  shift_augmenter:
+    _target_: genesis_ILDP.model.common.modules.RandomShiftsAug
+    pad: 20                    # Pad 20 pixels for random shifts
+
+  pos_shifter: null            # Disabled for baseline
+    # _target_: genesis_ILDP.model.common.modules.RandomPosShifter
+    # workspace_xlim: [-0.8, 0.0]
+    # workspace_ylim: [0.0, 0.8]
+    # shift_ratio: 0.3
+    # randomness_intensity: 0.2
+    # max_abs_shift: null
+
+  workspace_limiter: null      # Disabled for baseline
+
+  # Image encoder
+  imgs_encoding_net:
+    _target_: genesis_ILDP.model.vision.cnn_encoding.img_encoding_cnn
+    in_channels: 3
+    encoded_dim: 512           # Output dimension (IGNORED for ResNet18, outputs 512)
+    backbone: 'resnet18'       # Vision backbone
+    pretrained: false          # Train from scratch
+    use_spatial_softmax: false
+    spatial_softmax_temp: 1.0
+    input_image_shape: [96, 96]
+    dropout: 0.0
+
+  # Time encoding
+  time_encoding:
+    _target_: genesis_ILDP.model.encoding.time_encoding
+    t_emb_dim: 128
+    use_mlp_layer: true
+    dropout: 0.0
+
+  # Position encoding (disabled for baseline)
+  pos_encoding: null
+    # _target_: genesis_ILDP.model.encoding.pos_encoding
+    # encoded_dim: 128
+    # agent_pos_dim: 2
+    # dropout: 0.0
+
+  # Multimodal encoding fusion
+  merge_multimodal_encoding:
+    _target_: genesis_ILDP.model.encoding.merge_multimodal_encoding
+
+  # Conditioned UNet
+  conditioned_unet:
+    _target_: genesis_ILDP.model.diffusion.conditioned_unet.Unet
+    # Global features = img_features + time_encoding + agent_pos
+    # = 512 * 2 (two frames) + 128 (time) + 2 * 2 (agent_pos for two frames)
+    # = 1024 + 128 + 4 = 1156
+    dim_global_features: ${eval:'${policy.imgs_encoding_net.encoded_dim} * ${n_obs_steps} + ${policy.time_encoding.t_emb_dim} + 2 * ${n_obs_steps}'}
+    input_dim: 2               # Action dimension
+    dropout: 0.0
+
+  # Noise scheduler
+  noise_scheduler:
+    _target_: genesis_ILDP.model.common.noise_scheduler.NoiseScheduler
+    mode: 'cosine'             # Cosine schedule (stable)
+    device: 'cuda:0'
+
+  # Normalizer (will be set from dataset)
+  normalizer: null
+
+  # ===== MEMORY NET CONFIGURATION =====
+  memory_net:
+    _target_: genesis_ILDP.model.memory.memoryNET.MemoryNet
+    device: 'cuda:0'
+    config:
+      # State and feature dimensions
+      state_dim: 512           # MUST match img_feature_dim for compatibility
+      img_feature_dim: 512     # MUST match imgs_encoding_net output (ResNet18 = 512)
+      action_dim: 2            # 2D action space
+      action_horizon: 16       # MUST match policy horizon
+
+      # World model architecture
+      world_model_hidden_dims: [512, 512, 256]  # MLP hidden layers
+      action_chunk_model_channels: [16, 32, 64] # CNN channels for action encoding
+      action_chunk_model_strides: [2, 2, 2]     # CNN strides
+      action_hidden_dims: 128                    # Action embedding dimension
+
+      # Gate network architecture
+      gate_hidden_dims: [256, 128]              # Gate MLP hidden layers
+
+# === TASK CONFIGURATION ===
+task:
+  name: pusht_memory
+  shape_meta: ${shape_meta}
+
+  # Dataset: Variable-length sequence chunks
+  dataset:
+    _target_: genesis_ILDP.dataset.pusht_sequence_chunk_dataset.PushTSequenceChunkDataset
+    zarr_path: ../data/train_data/pusht/merged_data_0925.zarr
+    min_chunk_length: 16       # Must be >= horizon to ensure valid loss computation
+    max_chunk_length: 32       # Longer chunks provide more training signal per sample
+    pad_before: ${eval:'${n_obs_steps}-1'}     # 1
+    pad_after: ${eval:'${n_action_steps}-1'}   # 7
+    seed: 42
+    val_ratio: 0.05
+    max_train_episodes: null
+    workspace_limits: ${workspace_limits}
+
+  # Environment runner with memory support
+  env_runner:
+    _target_: genesis_ILDP.env_runner.pusht_memory_runner.PushTMemoryRunner
+    output_dir: ${multi_run.run_dir}
+    # Memory-specific parameter
+    use_memory_rollout: true   # Enable memory-based rollout
+
+    # Standard runner parameters (matching PushTImageRunner signature)
+    n_train: 10
+    n_train_vis: 2
+    n_test: 60
+    n_test_vis: 8
+    n_obs_steps: ${n_obs_steps}
+    n_action_steps: ${n_action_steps}
+    diff_steps: 100
+    max_steps: 600
+    fps: 30
+    device: 'cuda:0'
+    enable_past_action: false
+    train_start_seed: 0
+    test_start_seed: 50000
+    enable_render: true
+    done_ratio: 0.7
+    n_envs: null
+    spawn_mode: 'uniform'
+    uniform_sampler_config:
+      center_x: -0.3
+      center_y: 0.3
+      x_range: 0.1
+      y_range: 0.1
+      min_xy_sep: 0.12
+      min_ang_sep: 20.0
+      max_tries: 64
+    circular_sampler_config: null
+
+# === TRAINING CONFIGURATION ===
+training:
+  seed: 42
+  device: cuda:0
+  num_epochs: 500
+  batch_size: 8                # Now using real batching with SmartBatchSampler
+  deterministic: true
+  worker_seed_strategy: offset
+  use_generator: true          # Use generator for reproducibility
+
+  # Learning and optimization
+  lr_scheduler: cosine
+  lr_warmup_steps: 500
+  gradient_accumulate_every: 1  # No need for gradient accumulation with real batching
+  max_grad_norm: 1.0            # Gradient clipping
+
+  # Checkpointing and evaluation
+  checkpoint_every: 50
+  val_every: 5
+  rollout_every: 50
+  sample_every: 5
+
+  # Limits
+  max_train_steps: null
+  max_val_steps: null
+
+  # Debugging and logging
+  debug: false
+  tqdm_interval_sec: 1.0
+  use_ema: true
+  resume: false
+
+# === OPTIMIZER CONFIGURATION ===
+optimizer:
+  _target_: torch.optim.AdamW
+  lr: 0.0001
+  betas: [0.95, 0.999]
+  eps: 1.0e-08
+  weight_decay: 1.0e-05
+
+# === DATA LOADING ===
+# NOTE: Custom collate_fn is used in workspace for variable-length sequences
+dataloader:
+  batch_size: ${training.batch_size}
+  num_workers: 0               # 0 workers for debugging (increase to 4 for production)
+  shuffle: true
+  pin_memory: true
+  drop_last: false
+
+val_dataloader:
+  batch_size: ${training.batch_size}
+  num_workers: 0
+  shuffle: false
+  pin_memory: true
+
+# === EMA CONFIGURATION ===
+ema:
+  _target_: genesis_ILDP.model.common.ema_model.EMAModel
+  inv_gamma: 1.0
+  max_value: 0.9999
+  min_value: 0.0
+  power: 0.75
+  update_after_step: 0
+
+# === CHECKPOINT CONFIGURATION ===
+checkpoint:
+  save_last_ckpt: true
+  save_last_snapshot: false
+  topk:
+    format_str: epoch={epoch:04d}-test_mean_score={test_mean_score:.3f}.ckpt
+    k: 5
+    mode: max
+    monitor_key: test_mean_score
+
+# === LOGGING CONFIGURATION ===
+logging:
+  mode: online               # 'online', 'offline', or 'disabled'
+  project: genesis_ILDP_memory_diffusion
+  group: memory_diffusion_pusht
+  name: ${exp_name}_${now:%Y.%m.%d-%H.%M.%S}
+  tags:
+    - memory_diffusion
+    - action_diffusion_memory_policy
+    - pusht_memory
+    - variable_length_sequence
+    - genesis
+  id: null
+  resume: false
+
+# === OUTPUT CONFIGURATION ===
+multi_run:
+  run_dir: outputs/${now:%Y.%m.%d}/${now:%H.%M.%S}_${exp_name}
+  wandb_name_base: ${now:%Y.%m.%d}-${now:%H.%M.%S}_${exp_name}
+
+# ============================================================================
+# USAGE INSTRUCTIONS
+# ============================================================================
+#
+# To train the model, run:
+#
+#   python genesis_ILDP/workspace/train_memory_diffusion_workspace.py
+#
+# OR with custom config path:
+#
+#   python genesis_ILDP/workspace/train_memory_diffusion_workspace.py \
+#       --config-path /path/to/config \
+#       --config-name train_memory_diffusion_workspace
+#
+# OR override parameters:
+#
+#   python genesis_ILDP/workspace/train_memory_diffusion_workspace.py \
+#       training.num_epochs=1000 \
+#       training.batch_size=2 \
+#       policy.use_state_prob=0.7
+#
+# The workspace file expects this config to be named:
+#   genesis_ILDP/config/train_memory_diffusion_workspace.yaml
+#
+# ============================================================================
+# TROUBLESHOOTING
+# ============================================================================
+#
+# 1. Out of Memory (OOM):
+#    - Reduce training.batch_size (already at 1)
+#    - Reduce gradient_accumulate_every
+#    - Reduce horizon or max_chunk_length
+#    - Reduce model sizes in memory_net config
+#
+# 2. Training unstable / NaN loss:
+#    - Check noise_clip_percentile (currently 95)
+#    - Enable randn_clip_value and denoised_clip_value
+#    - Reduce learning rate
+#    - Check data normalization
+#
+# 3. Poor performance:
+#    - Adjust use_state_prob (0.5 is balanced, increase for more state reliance)
+#    - Increase gradient_accumulate_every for larger effective batch size
+#    - Ensure data quality and diversity
+#    - Try different memory_net architectures
+#
+# 4. Action horizon mismatch error:
+#    - Ensure memory_net.config.action_horizon matches policy.horizon
+#    - Currently both set to 16
+#
+# ============================================================================

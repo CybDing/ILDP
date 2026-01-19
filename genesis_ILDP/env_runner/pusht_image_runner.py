@@ -113,8 +113,6 @@ class PushTImageRunner(BaseImageRunner):
         self.episode_info = dict()
         self.max_reward = [None for _ in range(self.n_envs)]
 
-        # Timestep tracking for completion analysis
-        # self.episode_timesteps = [0] * self.n_envs  # Current timesteps per environment
         self.completion_timesteps = [None] * self.n_envs  # Record completion timesteps
         self.global_timestep = 0  # Global step counter across all envs
 
@@ -126,44 +124,22 @@ class PushTImageRunner(BaseImageRunner):
         self.env_obs_buffer = [[] for _ in range(self.n_envs)]  # per-env observations (unnormalized)
         self.env_reward_buffer = [[] for _ in range(self.n_envs)]  # per-env rewards
 
-        # Global episode buffer (accumulates completed episodes)
+        # Episode buffer: stores all collected trajectories
+        # All buffers use torch.empty for consistent format and efficiency
         self.episode_buffer = {
             'obs': {
-                'img': [],  # Will store unnormalized or normalized obs depending on convenience
-                'agent_pos': [],
+                'img': torch.empty(size=(0, self.n_obs_steps, 3, *image_shape), dtype=torch.float32),  # UNNORMALIZED (global_steps, n_obs_steps, C, H, W)
+                'agent_pos': torch.empty(size=(0, self.n_obs_steps, 2), dtype=torch.float32)  # UNNORMALIZED (global_steps, n_obs_steps, Dp)
             },
-            'action': [],  # Stores NORMALIZED diffusion actions (diff_steps+1, horizons, Da)
-            'reward': [],
-            'episode_ends': []  # Records global_step index where each episode ends
+            'last_obs': {  # For bootstrapping in RL training
+                'img': torch.empty(size=(0, self.n_obs_steps, 3, *image_shape), dtype=torch.float32),  # UNNORMALIZED (N_episodes, n_obs_steps, C, H, W)
+                'agent_pos': torch.empty(size=(0, self.n_obs_steps, 2), dtype=torch.float32)  # UNNORMALIZED (N_episodes, n_obs_steps, Dp)
+            },
+            'action': torch.empty(size=(0, self.diff_steps+1, self.n_action_steps, 2), dtype=torch.float32),  # NORMALIZED diffusion actions (global_steps, diff_steps+1, horizons, Da)
+            'reward': torch.empty(size=(0,), dtype=torch.float32),  # (global_steps,)
+            'episode_ends': torch.empty(size=(0,), dtype=torch.int64),  # (N_episodes,) cumulative indices where episodes end
+            'is_truncate': torch.empty(size=(0,), dtype=torch.bool)  # (N_episodes,) whether episode was truncated by max_steps
         }
-        """
-        Shape meta for the episode buffer:
-
-        [global_steps are concatenating the episodes together along the step axis, and use the
-        episode_ends to indicate at which global_step each episode has ended]
-
-        Data format details:
-            obs: (condition for diffusion process)
-                img: (global_steps, n_obs_steps, C, H, W) - UNNORMALIZED observations
-                agent_pos: (global_steps, n_obs_steps, Dp) - UNNORMALIZED agent positions
-
-            action: (global_steps, diff_steps+1, horizons, Da)
-                    - NORMALIZED diffusion actions (normalized in policy during training)
-                    - Includes the initial random noise step (index 0) through all denoising steps
-                    - Can be directly fed into diffusion model for computing action mean prediction
-                    [See action_diffusion_image_policy.py for diffusion process details]
-
-            reward: (global_steps,) - Raw reward values from environment
-
-            episode_ends: List[int] - Indices in global_steps where each episode ends
-                          e.g., [150, 320, 500] means:
-                          - Episode 0: steps 0-149
-                          - Episode 1: steps 150-319
-                          - Episode 2: steps 320-499
-                          Length equals number of completed episodes
-
-        Note: All data is stored on GPU for efficient computation during training/fine-tuning.
-        """
 
         self.env = MultiStepWrapper(
                     PushTEnv(
@@ -184,18 +160,25 @@ class PushTImageRunner(BaseImageRunner):
     
         self._setup_envs()
 
-    def _clean_buffer(self, ):
+    def _clean_buffer(self):
+        """Reset all buffers to empty state using torch.empty for consistency."""
+        image_shape = self.env.env.render_size
         self.episode_buffer = {
-                'obs': {
-                    'img': [],
-                    'agent_pos': [],
-                },
-                'action': [], 
-                'reward': [],
-                'episode_ends': []  
-        } 
-        self.diffusion_action_buffer = [[] for _ in range(self.n_envs)]  #
-        self.env_obs_buffer = [[] for _ in range(self.n_envs)]  
+            'obs': {
+                'img': torch.empty(size=(0, self.n_obs_steps, 3, *image_shape), dtype=torch.float32),  # UNNORMALIZED
+                'agent_pos': torch.empty(size=(0, self.n_obs_steps, 2), dtype=torch.float32)  # UNNORMALIZED
+            },
+            'last_obs': {
+                'img': torch.empty(size=(0, self.n_obs_steps, 3, *image_shape), dtype=torch.float32),  # UNNORMALIZED
+                'agent_pos': torch.empty(size=(0, self.n_obs_steps, 2), dtype=torch.float32)  # UNNORMALIZED
+            },
+            'action': torch.empty(size=(0, self.diff_steps+1, self.n_action_steps, 2), dtype=torch.float32),  # NORMALIZED
+            'reward': torch.empty(size=(0,), dtype=torch.float32),
+            'episode_ends': torch.empty(size=(0,), dtype=torch.int64),
+            'is_truncate': torch.empty(size=(0,), dtype=torch.bool)
+        }
+        self.diffusion_action_buffer = [[] for _ in range(self.n_envs)]
+        self.env_obs_buffer = [[] for _ in range(self.n_envs)]
         self.env_reward_buffer = [[] for _ in range(self.n_envs)]  
 
     def get_saved_trajectories(self, ):
@@ -215,7 +198,8 @@ class PushTImageRunner(BaseImageRunner):
         """
 
         self._prepare_run()
-        self._clean_buffer()
+        self._clean_buffer() # clean the episode buffer when running a series of new collection under new seeds(if not given specific seed, the 
+        # seed is being inferred from the last used seed + n_test)
 
         obs = self.env.reset()
 
@@ -238,15 +222,7 @@ class PushTImageRunner(BaseImageRunner):
                     del obs_dict['envs_idx']
 
                 with torch.no_grad():
-                    result = policy.predict_action(obs_dict, recording_diffusion=self.episode_recording, generator=generator)
-
-                    if isinstance(result, dict):
-                        action_dict = result
-                        current_diffusion_buffer = result.get('action_diffusion_buffer', None)
-                    else:
-                        # Backward compatibility: handle old tuple return format
-                        action_dict = result
-                        current_diffusion_buffer = None
+                    action_dict, current_action_diffusion_buffer = policy.predict_action(obs_dict, recording_diffusion=self.episode_recording, generator=generator)
 
                 if isinstance(action_dict, dict):
                     action = action_dict['action']
@@ -254,15 +230,15 @@ class PushTImageRunner(BaseImageRunner):
                     action = action_dict
 
                 # Store per-environment observations and diffusion actions before stepping
-                if self.episode_recording and current_diffusion_buffer is not None:
+                if self.episode_recording and current_action_diffusion_buffer is not None:
                     for local_idx, env_idx in enumerate(active_envs_idx):
-                        # Store unnormalized observations (original from obs_dict before normalization in policy)
+                        # Store UNNORMALIZED observations (policy will handle the normalization according to dataset normalizer)
                         self.env_obs_buffer[env_idx].append({
-                            'image': obs['image'][local_idx],  # Keep on GPU
+                            'image': obs['image'][local_idx],  
                             'agent_pos': obs['agent_pos'][local_idx]
                         })
-                        # Store normalized diffusion actions (diff_steps+1, horizons, Da) on GPU
-                        self.diffusion_action_buffer[env_idx].append(current_diffusion_buffer[local_idx])
+                        # Store NORMALIZED actions (diff_steps+1, horizons, Da) on GPU
+                        self.diffusion_action_buffer[env_idx].append(current_action_diffusion_buffer[local_idx])
 
                 # record the last step observation and current action(note that we should pad for
                 # terminated envs their observations and actions)
@@ -278,16 +254,12 @@ class PushTImageRunner(BaseImageRunner):
 
                 obs, reward, done, info = self.env.step(Active_action)
 
-                # Store rewards for active environments after stepping
                 if self.episode_recording:
                     for local_idx, env_idx in enumerate(active_envs_idx):
-                        self.env_reward_buffer[env_idx].append(reward[env_idx])  # Keep on GPU
+                        self.env_reward_buffer[env_idx].append(reward[env_idx]) 
 
-                # Update timestep tracking
                 self.global_timestep += 1
-                # for env_idx in active_envs_idx:
-                #     self.episode_timesteps[env_idx] += 1
-
+            
                 if self.enable_past_action:
                     self._update_past_action(Active_action)
 
@@ -356,36 +328,39 @@ class PushTImageRunner(BaseImageRunner):
             self.env.start(n_envs=self.n_envs, env_separate=False, show_interact_viewer = self.show_interactive_viewer) 
             # The mac does not support separate the env for rendering
 
-        print(f"------SETUP COMPLETE!------\
+        print(f"------PUSHT ENV RUNNER SETUP COMPLETE!------\
               \n Configuration:  n_test={self.n_test},  n_train={self.n_train}, \
               n_envs={self.n_envs}\n max_steps={self.max_steps}")
 
-    def _prepare_run(self):
+    def _update_seeds(self, seed_train=None, seed_test=None):
+        self.seed_train = seed_train if seed_train is not None else self.seed_train
+        self.seed_test = seed_test if seed_test is not None else self.seed_test
+
+    def _prepare_run(self, enable_render=True):
         """
         Prepare per-run state (called before each run()).
-        Does NOT modify global state like seeds or video directories.
         """
-        # Update env_seeds based on current seed values (which increment between runs)
+
+        # Update env_seeds based on current seed values (which increment between runs during training)
+        # For collecting RL replay buffer, the collecting behaviours are the same, except '_update_seeds_' will be called 
+        # before all the seeds are collected in one turn. 
+
         self.env_seeds = np.concatenate((
             np.arange(start=self.seed_train, stop=self.seed_train + self.n_train),
             np.arange(start=self.seed_test, stop=self.seed_test + self.n_test)
         ), axis=0)
 
-        # Seed the environments
         self.env.seed(self.env_seeds)
 
-        # Setup video directories and paths (only if rendering enabled)
         if self.enable_render:
             if not self._video_dirs_initialized:
-                # One-time: Create directory structure
                 self.video_manager.setup_directories()
                 self._video_dirs_initialized = True
                 print(f"✓ Video dirs: {self.video_manager.train_video_dir.parent.parent}") # timestep -> train -> parent
 
-            # Every run: Update paths with current seeds
             self.video_manager.update_file_paths(self.seed_train, self.seed_test)
 
-        # Reset per-run state
+        # Reset per-run state (used for replay buffer saving)
         self.info = None
         self.episode_obs = None
         self.episode_reward = [[] for _ in range(self.n_envs)]
@@ -418,6 +393,7 @@ class PushTImageRunner(BaseImageRunner):
 
         active_env_indices = []
         for i in range(self.n_envs):
+            # check here if the rewards in terminated envs should not be saved into the buffer 
             if reward[i] is None:
                 raise ValueError("Reward saving error!")
             self.episode_reward[i].append(reward[i].cpu().numpy())
@@ -426,24 +402,21 @@ class PushTImageRunner(BaseImageRunner):
                 active_env_indices.append(i)
 
             elif env_status[i] == 3:  # Natural success
-                # Record per-env timestep when this environment succeeded
-                # Convert action steps to actual environment steps
                 self.completion_timesteps[i] = self.global_timestep * self.n_action_steps
 
                 for key in self.info.keys():
                     if key == 'envs_idx': continue
                     self.info[key][i] = info[key][i]
-
-                # Transfer completed environment data to episode_buffer
+    
                 if self.episode_recording:
-                    self._transfer_env_to_episode_buffer(i)
+                    self._transfer_env_to_episode_buffer(i, obs, is_truncate=False)
 
-            elif env_status[i] == 1:  # Truncated by max_steps
-                # Also transfer truncated episode data to episode_buffer
+            elif env_status[i] == 1:  # Truncated by max_steps, then this last obs should be used as bootstrapping
                 if self.episode_recording:
-                    self._transfer_env_to_episode_buffer(i)
+                    self._transfer_env_to_episode_buffer(i, obs, is_truncate=True)
 
-            # env_status[i] == 0 (already done): do nothing, already transferred
+            # env_status[i] == 0 (already done): do nothing, already transferred and terminated
+            # (without sending making any new actions sending via env api)
 
         if active_env_indices:
             if isinstance(obs, dict)==False:
@@ -461,58 +434,47 @@ class PushTImageRunner(BaseImageRunner):
 
         return new_obs, active_env_indices
 
-    def _transfer_env_to_episode_buffer(self, env_idx):
+    def _transfer_env_to_episode_buffer(self, env_idx, last_obs=None, is_truncate=True):
         """
         Transfer completed environment data to the global episode_buffer.
 
         Args:
             env_idx: Index of the environment that just finished
+            last_obs: Terminal observation for bootstrapping (dict with 'image' and 'agent_pos' keys)
+            is_truncate: Whether episode was truncated by max_steps (True) or naturally terminated (False)
         """
         if len(self.env_obs_buffer[env_idx]) == 0:
-            # No data to transfer (shouldn't happen, but safeguard)
             return
 
-        # Stack observations for this episode
-        # env_obs_buffer[env_idx] is a list of dicts, each containing 'image' and 'agent_pos'
+        # Stack observations, actions, rewards for this episode (UNNORMALIZED obs, NORMALIZED actions)
         episode_images = torch.stack([obs['image'] for obs in self.env_obs_buffer[env_idx]], dim=0)
         episode_agent_pos = torch.stack([obs['agent_pos'] for obs in self.env_obs_buffer[env_idx]], dim=0)
-
-        # Stack diffusion actions for this episode (already normalized, from policy)
-        # Shape per step: (diff_steps+1, horizons, Da)
         episode_actions = torch.stack(self.diffusion_action_buffer[env_idx], dim=0)
-
-        # Stack rewards for this episode
         episode_rewards = torch.stack(self.env_reward_buffer[env_idx], dim=0)
 
-        # Append to global episode_buffer (keep on GPU)
-        # Note: These lists will accumulate data from all completed episodes
-        if len(self.episode_buffer['obs']['img']) == 0:
-            # First episode - directly assign
-            self.episode_buffer['obs']['img'] = episode_images
-            self.episode_buffer['obs']['agent_pos'] = episode_agent_pos
-            self.episode_buffer['action'] = episode_actions
-            self.episode_buffer['reward'] = episode_rewards
-        else:
-            # Concatenate along the step dimension (global_steps)
-            self.episode_buffer['obs']['img'] = torch.cat([
-                self.episode_buffer['obs']['img'], episode_images
-            ], dim=0)
-            self.episode_buffer['obs']['agent_pos'] = torch.cat([
-                self.episode_buffer['obs']['agent_pos'], episode_agent_pos
-            ], dim=0)
-            self.episode_buffer['action'] = torch.cat([
-                self.episode_buffer['action'], episode_actions
-            ], dim=0)
-            self.episode_buffer['reward'] = torch.cat([
-                self.episode_buffer['reward'], episode_rewards
-            ], dim=0)
+        # Append to global buffer using torch.cat (unified logic, no if-else branching)
+        self.episode_buffer['obs']['img'] = torch.cat([self.episode_buffer['obs']['img'], episode_images], dim=0)
+        self.episode_buffer['obs']['agent_pos'] = torch.cat([self.episode_buffer['obs']['agent_pos'], episode_agent_pos], dim=0)
+        self.episode_buffer['action'] = torch.cat([self.episode_buffer['action'], episode_actions], dim=0)
+        self.episode_buffer['reward'] = torch.cat([self.episode_buffer['reward'], episode_rewards], dim=0)
 
-        # Record the cumulative global end index for this episode
-        # This is the total number of steps accumulated so far across all episodes
+        # Store last observation for bootstrapping (if provided)
+        if last_obs is not None:
+            # UNNORMALIZED last observation: (n_obs_steps, C, H, W) and (n_obs_steps, Dp)
+            last_img = last_obs['image'].unsqueeze(0)  # Add batch dimension -> (1, n_obs_steps, C, H, W)
+            last_pos = last_obs['agent_pos'].unsqueeze(0)  # Add batch dimension -> (1, n_obs_steps, Dp)
+            self.episode_buffer['last_obs']['img'] = torch.cat([self.episode_buffer['last_obs']['img'], last_img], dim=0)
+            self.episode_buffer['last_obs']['agent_pos'] = torch.cat([self.episode_buffer['last_obs']['agent_pos'], last_pos], dim=0)
+
+        # Record episode metadata
         current_global_steps = self.episode_buffer['obs']['img'].shape[0]
-        self.episode_buffer['episode_ends'].append(current_global_steps)
+        episode_end_idx = torch.tensor([current_global_steps], dtype=torch.int64)
+        truncate_flag = torch.tensor([is_truncate], dtype=torch.bool)
 
-        # Clear this environment's temporary buffers for next episode
+        self.episode_buffer['episode_ends'] = torch.cat([self.episode_buffer['episode_ends'], episode_end_idx], dim=0)
+        self.episode_buffer['is_truncate'] = torch.cat([self.episode_buffer['is_truncate'], truncate_flag], dim=0)
+
+        # Clear per-env buffers
         self.env_obs_buffer[env_idx] = []
         self.diffusion_action_buffer[env_idx] = []
         self.env_reward_buffer[env_idx] = []
