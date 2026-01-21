@@ -6,7 +6,7 @@ import torch.nn as nn
 # from diffusion_policy.model.common.module_attr_mixin import ModuleAttrMixin
 from diffusion_policy.model.common.normalizer import LinearNormalizer
 
-class BaseImagePolicy:
+class BaseImagePolicy(nn.Module):
     """
     Base imagePolicy for robot to manipulate using imgs as input as well as other perceivable states
     and useful information to predict future actions. 

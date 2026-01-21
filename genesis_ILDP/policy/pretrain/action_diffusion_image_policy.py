@@ -18,7 +18,7 @@ from genesis_ILDP.model.common.modules import RandomShiftsAug, RandomPosShifter
 from diffusion_policy.model.common.normalizer import LinearNormalizer
 from genesis_ILDP.model.vision.crop_randomizer import CropRandomizer
 from genesis_ILDP.model.common.workspace_limiter import WorkspaceLimiter
-
+from typing import Optional
 
 class ActionDiffusionImagePolicy(BaseImagePolicy):
        
@@ -30,7 +30,7 @@ class ActionDiffusionImagePolicy(BaseImagePolicy):
                  imgs_encoding_net: img_encoding_cnn,
                  conditioned_unet: Unet,
                  noise_scheduler: NoiseScheduler,
-                 normalizer: LinearNormalizer,
+                 normalizer: Optional[LinearNormalizer|None],
 
                  diff_steps: int = 100,
                  obs_steps: int = 2,

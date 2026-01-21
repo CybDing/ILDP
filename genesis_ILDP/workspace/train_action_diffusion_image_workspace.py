@@ -19,7 +19,7 @@ import numpy as np
 from typing import Optional
 
 from genesis_ILDP.workspace.base_workspace import BaseWorkspace
-from genesis_ILDP.policy.action_diffusion_image_policy import ActionDiffusionImagePolicy
+from genesis_ILDP.policy.pretrain.action_diffusion_image_policy import ActionDiffusionImagePolicy
 from genesis_ILDP.dataset.base_dataset import BaseImageDataset
 from genesis_ILDP.env_runner.base_image_runner import BaseImageRunner
 from genesis_ILDP.utils.pytorch_util import dict_apply, optimizer_to

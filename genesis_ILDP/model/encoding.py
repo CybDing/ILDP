@@ -6,11 +6,11 @@ import torch.nn.functional as F
 import numpy as np
 from genesis_ILDP.utils.cuda import to_torch
 from torchvision import models
-from genesis_ILDP.model.vision_transformer import (
+from genesis_ILDP.model.vision.vision_transformer import (
     vit_tiny, vit_small, vit_base, vit_large, vit_custom
 )
 # Import the clean ViT encoding wrapper
-from genesis_ILDP.model.vit_encoding import vit_img_encoding
+from genesis_ILDP.model.vision.vit_encoding import vit_img_encoding
 
 def torch_stack_images(imgs:list):
     # images_stack (B * 2 * W * H * C)

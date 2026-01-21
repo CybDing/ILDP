@@ -165,7 +165,7 @@ class PushTEnv(gym.Env):
             show_viewer=show_interact_viewer,
         )
 
-        self.plane : gs.engine.entities.RigidEntity = self.scene.add_entity(
+        self.plane = self.scene.add_entity(
             gs.morphs.URDF(
                 file=self.path['plane'],
                 fixed=True,
@@ -176,7 +176,7 @@ class PushTEnv(gym.Env):
             material=gs.materials.Rigid(gravity_compensation=1.0)
         )
 
-        self.robot : gs.engine.entities.RigidEntity = self.scene.add_entity(
+        self.robot = self.scene.add_entity(
             gs.morphs.URDF(
                 pos = (0, 0, 0.3), # change to 0.17 could make sure the bot arm higher and not hinder more top views maybe 
                 file = self.path['robot'],
@@ -189,7 +189,7 @@ class PushTEnv(gym.Env):
             )
         )
 
-        self.cube : gs.engine.entities.RigidEntity = self.scene.add_entity(
+        self.cube = self.scene.add_entity(
             gs.morphs.URDF(
                 pos = (0, 0, 0),
                 file=self.path['TCube'],
@@ -252,9 +252,9 @@ class PushTEnv(gym.Env):
 
         self.robot_dofs_idx = [self.robot.get_joint(name).dof_idx_local for name in jnt_names]
         self.cube_dofs_idx  = self.cube.get_joint('cube_plane_joint').dof_idx_local
-        self.tcp: gs.engine.entities.rigid_entity.RigidLink = self.robot.get_link('tcp')
-        self.eef: gs.engine.entities.rigid_entity.RigidLink = self.robot.get_link('flange_with_ori') 
-        self.gripper: gs.engine.entities.rigid_entity_RigidJoint = self.robot.get_joint('finger_width_joint')  
+        self.tcp = self.robot.get_link('tcp')
+        self.eef = self.robot.get_link('flange_with_ori') 
+        self.gripper = self.robot.get_joint('finger_width_joint')  
         self.gripper_idx = self.gripper.dof_idx_local      
         self.eef_idx = self.eef.idx_local
         self.tcp_idx = self.tcp.idx_local
@@ -692,7 +692,7 @@ class PushTEnv(gym.Env):
         return centered_reward
 
 
-    def _ikine(self, link: gs.engine.entities.rigid_entity.RigidLink, 
+    def _ikine(self, link, 
                pos: torch.Tensor, quat: torch.Tensor, 
                envs_idx: torch.Tensor, init_qpos=None) -> torch.Tensor: 
         

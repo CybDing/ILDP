@@ -8,6 +8,12 @@ setup(
         "numpy",
         "zarr",
         "numcodecs",
+        "einops", 
+        'hydra-core',
+        'wandb',
+        'diffusers',
+        'pandas',
+        'shapely'
     ],
     python_requires=">=3.8",
     author="Leqi Ding",

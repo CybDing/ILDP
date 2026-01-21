@@ -7,7 +7,7 @@ matching the encoding API used by the policy.
 import torch
 import torch.nn as nn
 from typing import Optional, Tuple
-from genesis_ILDP.model.vision_transformer import (
+from genesis_ILDP.model.vision.vision_transformer import (
     vit_tiny, vit_small, vit_base, vit_large, vit_custom
 )
 
