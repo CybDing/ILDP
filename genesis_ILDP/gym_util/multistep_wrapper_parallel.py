@@ -100,7 +100,7 @@ class MultiStepWrapper(gym.Wrapper):
         done_list = []
         natural_done_list = []  # Track which envs reached natural done (not truncated)
 
-        active_envs_tensor = to_torch(np.array(self.active_envs))
+        active_envs_tensor = to_torch(np.array(self.active_envs), float=False)
 
         # print("[multistep_wrapper_parallel.py]: action shape", action.shape)
         if self.debug:
