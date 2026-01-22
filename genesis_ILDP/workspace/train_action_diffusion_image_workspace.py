@@ -377,7 +377,7 @@ class TrainActionDiffusionImageWorkspace(BaseWorkspace):
 @hydra.main(
     version_base=None,
     config_path=str(pathlib.Path(__file__).parent.parent.joinpath("config/train")),
-    config_name="train_action_diffusion_pusht_image_mps")
+    config_name="train_action_diffusion_pusht_image")
 def main(cfg):
     workspace = TrainActionDiffusionImageWorkspace(cfg)
     workspace.run()

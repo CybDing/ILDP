@@ -35,7 +35,7 @@ shape_meta:
       type: low_dim
 
 policy:
-  _target_: genesis_ILDP.policy.action_diffusion_image_policy.ActionDiffusionImagePolicy
+  _target_: genesis_ILDP.policy.pretrain.action_diffusion_image_policy.ActionDiffusionImagePolicy
   
   # Shape and basic parameters
   shape_meta: ${shape_meta}
@@ -129,8 +129,7 @@ task:
   # Dataset configuration
   dataset:
     _target_: genesis_ILDP.dataset.pusht_image_dataset.PushTImageDataset
-    # zarr_path: ../data/train_data/pusht/pusht_cchi_v7_replay.zarr
-    zarr_path: ../data/train_data/pusht/merged_data_0925.zarr
+    zarr_path: ../data/train_data/pusht/pusht_1027_cleaned.zarr
     horizon: ${horizon}
     pad_before: ${eval:'${n_obs_steps}-1'}     # 1
     pad_after: ${eval:'${n_action_steps}-1'}   # 7
@@ -209,18 +208,18 @@ optimizer:
 # === DATA LOADING ===
 dataloader:
   batch_size: ${training.batch_size}
-  num_workers: 0
-  # persistent_workers: true     # Keep workers alive between epochs for better performance
-  # pin_memory: true             # Optimized for CUDA
+  num_workers: 8
+  persistent_workers: true     # Keep workers alive between epochs for better performance
+  pin_memory: true             # Optimized for CUDA
   # prefetch_factor: 2           # Prefetch batches per worker for better GPU utilization
-  # shuffle: true
+  shuffle: true
   # drop_last: true              # keep batch sizes consistent across epochs for determinism
 
 val_dataloader:
   batch_size: ${training.batch_size}
-  num_workers: 0
-  # persistent_workers: true     # Keep workers alive between epochs for better performance
-  # pin_memory: true             # Optimized for CUDA
+  num_workers: 8
+  persistent_workers: true     # Keep workers alive between epochs for better performance
+  pin_memory: true             # Optimized for CUDA
   # prefetch_factor: 2           # Prefetch batches per worker for better GPU utilization
   shuffle: false
 

@@ -254,7 +254,7 @@ class PushTImageRunner(BaseImageRunner):
                         'action': action
                     }
 
-                obs, reward, done, info = self.env.step(Active_action)
+                obs, reward, done, info = self.env.step(Active_action['action'])
 
                 if self.episode_recording:
                     for local_idx, env_idx in enumerate(active_envs_idx):
