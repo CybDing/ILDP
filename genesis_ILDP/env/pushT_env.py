@@ -762,7 +762,7 @@ class PushTEnv(gym.Env):
             }
         
         if ret: 
-            return poses
+            return self.poses
 
 
     def _get_obs(self, rgb: bool = True, depth: bool = False, 
