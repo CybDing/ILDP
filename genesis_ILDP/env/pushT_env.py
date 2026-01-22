@@ -202,7 +202,16 @@ class PushTEnv(gym.Env):
                 )
         )
         
-        # the top view only for evaling usage when we need to capture the overall view of the robotic arm and the Tcube workspace
+        # Original training view
+        self.cam = self.scene.add_camera(
+            res=self.render_size,
+            pos=(0, 0.3, 0.9),
+            lookat=(-0.4, 0.3, 0),
+            fov=65,
+            GUI=show_camera,
+        )   
+
+        # the top view only for evaling usage (capture view for robotic arm and Tcube)
         
         # self.cam = self.scene.add_camera(
         #     res=self.render_size,
@@ -212,22 +221,15 @@ class PushTEnv(gym.Env):
         #     GUI=show_camera,
         # )
 
-        # Original tilted(make sure this is watched over the negative x axis) view from one side of the workspace which is used for the robot observing the environment 
+        
+        # low level cam view 
         # self.cam = self.scene.add_camera(
         #     res=self.render_size,
-        #     pos=(0, 0.3, 0.9),
-        #     lookat=(-0.4, 0.3, 0),
+        #     pos=(-0.7, 0.7, 0.95),
+        #     lookat=(-0.4, 0.4, 0.1),
         #     fov=65,
         #     GUI=show_camera,
         # )
-        # low level cam view 
-        self.cam = self.scene.add_camera(
-            res=self.render_size,
-            pos=(-0.7, 0.7, 0.95),
-            lookat=(-0.4, 0.4, 0.1),
-            fov=65,
-            GUI=show_camera,
-        )
 
         # high level cam view
         # self.cam = self.scene.add_camera(
@@ -238,7 +240,7 @@ class PushTEnv(gym.Env):
         #     GUI=show_camera,
         # )
 
-        # the tested attached cameras which could be attached to the eef when during the rolling out, but the effect is not good for our eef which is short
+        # attached cameras for eef during rollout, result bad since eef is short
         # self.cam_attached = self.scene.add_camera(
         #     res=self.render_size, 
         #     GUI=show_camera,
