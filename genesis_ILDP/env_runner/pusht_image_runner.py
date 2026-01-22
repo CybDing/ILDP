@@ -222,12 +222,14 @@ class PushTImageRunner(BaseImageRunner):
                     del obs_dict['envs_idx']
 
                 with torch.no_grad():
-                    action_dict, current_action_diffusion_buffer = policy.predict_action(obs_dict, recording_diffusion=self.episode_recording, generator=generator)
+                    result = policy.predict_action(obs_dict, recording_diffusion=self.episode_recording, generator=generator)
 
-                if isinstance(action_dict, dict):
-                    action = action_dict['action']
+                if isinstance(result, dict):
+                    action = result['action']
+                    current_action_diffusion_buffer = result.get('action_diffusion_buffer', None)
                 else:
-                    action = action_dict
+                    action = result
+                    current_action_diffusion_buffer = None
 
                 # Store per-environment observations and diffusion actions before stepping
                 if self.episode_recording and current_action_diffusion_buffer is not None:
@@ -252,7 +254,7 @@ class PushTImageRunner(BaseImageRunner):
                         'action': action
                     }
 
-                obs, reward, done, info = self.env.step(Active_action)
+                obs, reward, done, info = self.env.step(Active_action['action'])
 
                 if self.episode_recording:
                     for local_idx, env_idx in enumerate(active_envs_idx):

@@ -30,7 +30,7 @@ class ActionDiffusionImagePolicy(BaseImagePolicy):
                  imgs_encoding_net: img_encoding_cnn,
                  conditioned_unet: Unet,
                  noise_scheduler: NoiseScheduler,
-                 normalizer: Optional[LinearNormalizer|None],
+                 normalizer=None,
 
                  diff_steps: int = 100,
                  obs_steps: int = 2,
@@ -97,8 +97,10 @@ class ActionDiffusionImagePolicy(BaseImagePolicy):
         else: self.encode_agent_pos = True
 
         betas, cum_alphas = noise_scheduler.get_scheduler_values(self.diff_steps)
-        self.register_buffer('betas', betas)
-        self.register_buffer('cum_alphas', cum_alphas)
+        # self.register_buffer('betas', betas)
+        # self.register_buffer('cum_alphas', cum_alphas)
+        self.betas = betas
+        self.cum_alphas = cum_alphas
 
         self.traj_shape = (horizon, self.action_dim)
         
@@ -216,7 +218,6 @@ class ActionDiffusionImagePolicy(BaseImagePolicy):
 
         if self.use_ddpm:
             result = self.action_generation_ddpm(nimgs, nagent_pos, batch_size, recording_diffusion, generator=generator)
-
         else:
             if self.ddim_steps is None:
                 raise ValueError('ddim steps are not configured for ddim sampling')
@@ -229,7 +230,7 @@ class ActionDiffusionImagePolicy(BaseImagePolicy):
         if recording_diffusion:
             action_pred, action_diffusion_buffer = result
         else:
-            action_pred = result
+            action_pred, _ = result
 
         # Extract action steps for execution (typically the first n_action_steps)
         start = self.n_obs_steps - 1
