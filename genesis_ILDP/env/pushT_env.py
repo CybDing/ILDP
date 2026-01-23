@@ -417,7 +417,7 @@ class PushTEnv(gym.Env):
         ], axis=-1)
 
         # the original home_pos used for the collecting data and training and testing version 1
-        # home_pos_down = torch.tensor([-0.4602,  1.3013,  2.5882,  1.1296,  0.7087,  0.6787,  1.2742], device=gs.device).repeat(len(envs_idx), 1)
+        home_pos_down = torch.tensor([-0.4602,  1.3013,  2.5882,  1.1296,  0.7087,  0.6787,  1.2742], device=gs.device).repeat(len(envs_idx), 1)
         
         # home pos position at [-0.7, 0.7, 0.6] when the robot base link is on the ground
         # home_pos_down = torch.tensor([2.5575,  -1.6492,  0.0000, -1.4629,  0.0000,  -1.3845,  1.8101], device=gs.device).repeat(len(envs_idx), 1)
@@ -429,8 +429,8 @@ class PushTEnv(gym.Env):
         #                             quat=torch.tensor([0, 0, 1, 0]).repeat(num_reset, 1), 
         #                             envs_idx = envs_idx, 
         #                             init_qpos=None)[:, 0:7]
-        home_pos_down = torch.tensor([4.8013e-01,  1.7891e+00, -7.5375e-01, -8.2577e-01, -2.0216e+00,
-          7.3429e-01,  2.1266e+00], device=gs.device).repeat(len(envs_idx), 1)
+        # home_pos_down = torch.tensor([4.8013e-01,  1.7891e+00, -7.5375e-01, -8.2577e-01, -2.0216e+00,
+        #   7.3429e-01,  2.1266e+00], device=gs.device).repeat(len(envs_idx), 1)
                  
         self.home_pos = home_pos_down
         # print(self.home_pos)

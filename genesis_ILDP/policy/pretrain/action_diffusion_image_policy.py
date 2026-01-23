@@ -194,6 +194,9 @@ class ActionDiffusionImagePolicy(BaseImagePolicy):
         imgs, agent_pos = self._preprocess_obs(imgs, agent_pos)
 
         device = next(self.parameters()).device
+        
+        # if imgs.max() > 1.0: 
+        imgs = imgs / 255.0 # fix imgs input range
 
         # Generator device must match tensor device (MPS/CUDA/CPU)
         if generator is not None:
