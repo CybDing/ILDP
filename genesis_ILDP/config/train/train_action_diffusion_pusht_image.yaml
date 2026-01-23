@@ -1,7 +1,7 @@
 _target_: genesis_ILDP.workspace.train_action_diffusion_image_workspace.TrainActionDiffusionImageWorkspace
 
 # === EXPERIMENT SETTINGS ===
-exp_name: "action_diffusion_pusht_image_Cosine_with_Crop_lr_scale_without_pos_shift"
+exp_name: "pusht_image_shifter+shlimit_oldpos_baseline"
 task_name: pusht_image_ddpm
 name: train_action_diffusion_image
 
