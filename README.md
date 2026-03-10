@@ -1,43 +1,8 @@
-# ILDP 2025 project
-Special thx to:
-Real Stanford: diffusion policy (# main reference for transition)
-the new genesis version for imitation learning using DP!
+# ILDP(Imitation Learning via Diffusion Policy)
+Project Reference:
+- Real Stanford: diffusion policy
+- Genesis: Genesis // the simulator used as backbone
 
-Structure  Expected:( )
-- env
-  - flexiv_env: Providing basic settings with flexiv robotic arm(rizon 4)
-- model
-  - diffusion
-    - diffusion_unet (To be updated soon!)
-    - conv1d (To be updated soon!)
-  - RL
-    - (soft?)actor-critic
-    - (... Benchmarks)
-  - VLA
-    - (Generative policy based on decoder-encoder transformer)
-    - ...
-  - VPP (To be estimated)
-- env_runner
-  - pushT_envRunner
-  - ... 
-- datasets
-  - pushTDataset (To be updated soon!)
-  - ...
-- utils
-  - ...
-- script
-  - gen_image
-    - for segmentation test(training)
-  - collecting_data
-    - An interactive interface using Pygame communicating with genesis for user-friendly robot control(To be planned and executed soon!)   
-- Workspace
-  - train
-  - eval
+Project Structure:
 
-API functions:
-- push_t.env
-  - reset_idx, reset
-  - step
-  - start_recording, stop_recording 
-  - render(optional, get current img)
-
+README will be updated soon!
