@@ -4,8 +4,8 @@ import torch
 from genesis_ILDP.model.common.mlp import MLP, ResidualMLP
 from genesis_ILDP.model.common.miniblock import MiniBlock
 from genesis_ILDP.model.encoding.base_encoding import BaseEncoding
+from genesis_ILDP.utils.module_utils import ModuleDict
 from typing import List, Type, Optional, Dict, Union
-from torch.nn import ModuleDict
 
 
 ModuleType = Type[nn.Module]
@@ -42,15 +42,15 @@ class CriticObs(BaseCritic):
     ):
         in_dim = critic_config['obs_dim']
         arch = critic_config['arch']
-        activation = ModuleDict[critic_config['activation'].lower()]
-        normalisation = ModuleDict[critic_config['normalisation'].lower()]
-    
-        super(CriticObs).__init__(in_dim = in_dim, 
-                                  arch = arch, 
-                                  activation = activation, 
-                                  normalisation = normalisation)
-        
-    def forward(self, obs): 
+        activation = ModuleDict.get(critic_config['activation'].lower())
+        normalisation = ModuleDict.get(critic_config['normalisation'].lower())
+
+        super().__init__(in_dim=in_dim,
+                         arch=arch,
+                         activation=activation,
+                         normalisation=normalisation)
+
+    def forward(self, obs):
         return super().forward(state=obs)
 
 class CriticImageObs(BaseCritic):
@@ -60,25 +60,24 @@ class CriticImageObs(BaseCritic):
     """
 
     def __init__(
-        self, 
-        critic_config: Dict[int|list], 
-        img_encoding: BaseEncoding, 
-        state_encoding: BaseEncoding, 
-        residual_style = False, 
+        self,
+        critic_config: Dict[int|list],
+        img_encoding: BaseEncoding,
+        state_encoding: BaseEncoding,
+        residual_style = False,
     ):
-        super().__init__()
         self.img_encoding = img_encoding
         self.state_encoding = state_encoding
 
-        in_dim = len(self.img_encoding) + len(self.state_encoding_net)
+        in_dim = len(self.img_encoding) + len(self.state_encoding)
         arch = critic_config['arch']
-        activation = ModuleDict[critic_config['activation'].lower()]
-        normalisation = ModuleDict[critic_config['normalisation'].lower()]
-    
-        super(CriticObs).__init__(in_dim = in_dim, 
-                                  arch = arch, 
-                                  activation = activation, 
-                                  normalisation = normalisation)
+        activation = ModuleDict.get(critic_config['activation'].lower())
+        normalisation = ModuleDict.get(critic_config['normalisation'].lower())
+
+        super().__init__(in_dim=in_dim,
+                         arch=arch,
+                         activation=activation,
+                         normalisation=normalisation)
 
     def forward(self, obs):
         img_vec = self.img_encoding(obs['imgs'])

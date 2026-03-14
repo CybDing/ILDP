@@ -17,7 +17,7 @@ import wandb
 import json
 
 from genesis_ILDP.workspace.base_workspace import BaseWorkspace
-from genesis_ILDP.policy.action_diffusion_image_policy import ActionDiffusionImagePolicy
+from genesis_ILDP.policy.pretrain.action_diffusion_image_policy import ActionDiffusionImagePolicy
 from genesis_ILDP.env_runner.base_image_runner import BaseImageRunner
 
 OmegaConf.register_new_resolver("eval", eval, replace=True)
@@ -85,9 +85,10 @@ class EvalActionDiffusionImageWorkspace(BaseWorkspace):
             print(f"- Loaded weights: Regular model")
 
         # Load other state if needed (global_step, epoch, etc.)
-        for key in self.include_keys:
-            if key in payload['pickles']:
-                self.__dict__[key] = torch.serialization.dill.loads(payload['pickles'][key])
+        if self.include_keys is not None:
+            for key in self.include_keys:
+                if key in payload.get('pickles', {}):
+                    self.__dict__[key] = payload['pickles'][key]
 
     def run(self, policy=None, runner_params=None):
         """

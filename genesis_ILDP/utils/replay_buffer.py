@@ -16,4 +16,12 @@ class ReplayBuffer:
     
     def add(self, s1, s2, a1, r1, d):
         # add: chain_before, chain_after, chain_action, reward, done
-        
+        idx = self.ptr % self.buffer_size
+        self.data['s1'][idx] = s1
+        self.data['s2'][idx] = s2
+        self.data['a1'][idx] = a1
+        self.data['r1'][idx] = r1
+        self.data['d'][idx] = d
+        self.ptr += 1
+        if self.ptr >= self.buffer_size:
+            self.full = True
