@@ -40,7 +40,7 @@ class finetune_ppo_trainer(BaseTrainer):
         if self.idx_pointer == len(self.global_idx): return tuple([None] * 8)
 
         cur_global_idx = self.global_idx[self.idx_pointer,]
-        cur_local_idx = self.local_idx[self.idx_pointer, self.idx_pointer + batch_size]
+        cur_local_idx = self.local_idx[self.idx_pointer:self.idx_pointer + batch_size]
         # prepare training samples from buffers
         imgs = self.buffer['obs']['imgs'][cur_global_idx, cur_local_idx]
         agent_pos = self.buffer['obs']['agent_pos'][cur_global_idx, cur_local_idx]
@@ -55,11 +55,11 @@ class finetune_ppo_trainer(BaseTrainer):
     
 
     def _get_train_data(self) -> None:
-        collect_trajs = self.env_collector.collect_trajs
+        collect_trajs = self.env_collector.collect_trajs()
         collected_steps = collect_trajs['length']
 
         total_indices = self.buffer_size * self.ft_diff_steps
-        self.order = torch.permute(total_indices, device=self.device)
+        self.order = torch.randperm(total_indices, device=self.device)
         shape = (collected_steps, self.ft_diff_steps)
         self.global_idx, self.local_idx = torch.unravel_index(self.order, shape=shape, )
         self.idx_pointer = 0

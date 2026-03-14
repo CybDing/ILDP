@@ -1,4 +1,4 @@
-from genesis_ILDP.policy.action_diffusion_image_policy import ActionDiffusionImagePolicy
+from genesis_ILDP.policy.pretrain.action_diffusion_image_policy import ActionDiffusionImagePolicy
 import torch
 import numpy as np
 from genesis_ILDP.utils.cuda import *
@@ -46,9 +46,9 @@ class FTActionDiffusionImagePolicy(ActionDiffusionImagePolicy):
             except:
                 print("[FT_action_diffusion_image_policy] Parsing obs_dict error")
         
-        if isinstance(image, np.numpy):
+        if isinstance(image, np.ndarray):
             image = to_torch(image)
-        if isinstance(agent_pos, np.numpy):
+        if isinstance(agent_pos, np.ndarray):
             agent_pos = to_torch(agent_pos)
         
         if image.shape[-1] == 3 or image.shape[-1] == 1: # if image channels are not swapper before the width and height 
@@ -110,10 +110,9 @@ class FTActionDiffusionImagePolicy(ActionDiffusionImagePolicy):
         # ddpm prediction) for action sequence indexed from 1 to self.diff_steps 
         variance = self.betas[denoising_idx] * (1 - self.cum_alphas[denoising_idx-1]) / (1 - self.cum_alphas[denoising_idx])
 
-        # clip the variance to larger than the preset threshold
-        # TODO check and implement inside the parent class 
-
-        variance = torch.clamp(variance, min=self.variance_threshold, max=None) 
+        # clip the variance to a minimum threshold to avoid numerical instability
+        variance_threshold = getattr(self, 'variance_threshold', 1e-5)
+        variance = torch.clamp(variance, min=variance_threshold, max=None)
         
         # return the log prob: same shape(B, Ta, Da)
         # chain after is sampled from the normal distribution with mean equals 0, 

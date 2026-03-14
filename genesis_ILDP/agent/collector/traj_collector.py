@@ -2,7 +2,7 @@ import torch
 import numpy as np
 from genesis_ILDP.workspace.base_workspace import BaseWorkspace
 from genesis_ILDP.workspace.train_action_diffusion_image_workspace import TrainActionDiffusionImageWorkspace
-from genesis_ILDP.assets.backup.eval_action_diffusion_image_workspace import EvalActionDiffusionImageWorkspace
+from genesis_ILDP.workspace.visual_manual_eval_action_diffusion_image_workspace import EvalActionDiffusionImageWorkspace
 import copy
 import hydra
 
