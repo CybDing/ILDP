@@ -45,7 +45,7 @@ class PPODiffusionAgent(BaseAgent):
 
         # the decaying weight from diff_step idx 0 - 1 (diff_steps + 1 points)
         if self.weight_advantage_ploss is None: 
-            idx_normed = torch.arange(self.max_FTdiff_idx + 1) / self.max_FTdiff_idx 
+            idx_normed = torch.arange(self.max_FTdiff_idx + 1, device=raw_ratio.device) / self.max_FTdiff_idx
             self.clip_rate_ploss = self.clip_rate_ploss if self.clip_rate_ploss > 0 else 0
             self.weight_advantage_ploss = self.clip_base_ploss * torch.exp(-self.clip_rate_ploss * idx_normed)
         

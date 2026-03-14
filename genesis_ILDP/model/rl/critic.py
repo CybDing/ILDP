@@ -66,10 +66,7 @@ class CriticImageObs(BaseCritic):
         state_encoding: BaseEncoding,
         residual_style = False,
     ):
-        self.img_encoding = img_encoding
-        self.state_encoding = state_encoding
-
-        in_dim = len(self.img_encoding) + len(self.state_encoding)
+        in_dim = len(img_encoding) + len(state_encoding)
         arch = critic_config['arch']
         activation = ModuleDict.get(critic_config['activation'].lower())
         normalisation = ModuleDict.get(critic_config['normalisation'].lower())
@@ -78,6 +75,10 @@ class CriticImageObs(BaseCritic):
                          arch=arch,
                          activation=activation,
                          normalisation=normalisation)
+
+        # Assign submodules after nn.Module.__init__() so they are registered properly
+        self.img_encoding = img_encoding
+        self.state_encoding = state_encoding
 
     def forward(self, obs):
         img_vec = self.img_encoding(obs['imgs'])
