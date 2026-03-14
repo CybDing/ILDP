@@ -88,7 +88,7 @@ class EvalActionDiffusionImageWorkspace(BaseWorkspace):
         if self.include_keys is not None:
             for key in self.include_keys:
                 if key in payload.get('pickles', {}):
-                    self.__dict__[key] = payload['pickles'][key]
+                    self.__dict__[key] = dill.loads(payload['pickles'][key])
 
     def run(self, policy=None, runner_params=None):
         """

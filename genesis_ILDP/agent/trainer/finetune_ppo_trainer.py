@@ -6,10 +6,11 @@ MAX_LOOP_ITERATION = 100000
 class finetune_ppo_trainer(BaseTrainer):
     def __init__(self, ft_diff_steps, gamma, gae_lambda, 
                  agent:BaseAgent, env_collector, evaluator, batch_size=64,
-                   train_epochs=10, per_epoch_iteration=3):
+                   train_epochs=10, per_epoch_iteration=3, device='cpu'):
         super().__init__(ft_diff_steps=ft_diff_steps, gamma=gamma, gae_lambda=gae_lambda,
                          agent=agent, env_collector=env_collector, evaluator=evaluator, batch_size=batch_size, 
                          train_epochs=train_epochs, per_epoch_iterations=per_epoch_iteration)
+        self.device = device
 
         
     def train_step(self, ):
@@ -56,9 +57,10 @@ class finetune_ppo_trainer(BaseTrainer):
 
     def _get_train_data(self) -> None:
         collect_trajs = self.env_collector.collect_trajs()
-        collected_steps = collect_trajs['length']
+        collected_steps = collect_trajs['reward'].shape[0]
+        self.buffer_size = collected_steps
 
-        total_indices = self.buffer_size * self.ft_diff_steps
+        total_indices = collected_steps * self.ft_diff_steps
         self.order = torch.randperm(total_indices, device=self.device)
         shape = (collected_steps, self.ft_diff_steps)
         self.global_idx, self.local_idx = torch.unravel_index(self.order, shape=shape, )

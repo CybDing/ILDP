@@ -17,6 +17,11 @@ class BaseTrainer:
         self.gamma = gamma
         self.gae_lambda = gae_lambda
         self.agent = agent
+        self.env_collector = env_collector
+        self.evaluator = evaluator
+        self.batch_size = batch_size
+        self.train_epochs = train_epochs
+        self.per_epoch_iteration = per_epoch_iterations
 
         # buffer saving for shuffling collected trajs from env_collector
         self.order = None 

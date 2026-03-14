@@ -24,17 +24,17 @@ def calculate_full_batch_gae(value_trajs, last_obs_value,
                              reward_trajs, is_truncate_trajs, episode_ends_trajs,
                              gamma, gae_lambda) -> torch.Tensor:
 
-        idx = torch.where(episode_ends_trajs == 1)[0]
-        idx = torch.cat([torch.tensor([0], device=idx.device, dtype=idx.dtype), idx], dim=0)
-        final_gae = list()
-        for i in range(len(idx) - 1):
-           ep_start_idx = idx[i]
-           ep_end_idx = idx[i+1] + 1
+    idx = torch.where(episode_ends_trajs == 1)[0]
+    idx = torch.cat([torch.tensor([0], device=idx.device, dtype=idx.dtype), idx], dim=0)
+    final_gae = list()
+    for i in range(len(idx) - 1):
+        ep_start_idx = idx[i]
+        ep_end_idx = idx[i+1] + 1
 
-           full_value_trajs = torch.cat([value_trajs[ep_start_idx:ep_end_idx], last_obs_value[i].unsqueeze(0)], dim=0)
-           final_gae.append(calculate_GAE(reward_trajs=reward_trajs[ep_start_idx:ep_end_idx],
-                                           value_trajs=full_value_trajs,
-                                           is_truncate=is_truncate_trajs[ep_start_idx:ep_end_idx],
-                                           gamma=gamma, gae_lambda=gae_lambda))
+        full_value_trajs = torch.cat([value_trajs[ep_start_idx:ep_end_idx], last_obs_value[i].unsqueeze(0)], dim=0)
+        final_gae.append(calculate_GAE(reward_trajs=reward_trajs[ep_start_idx:ep_end_idx],
+                                       value_trajs=full_value_trajs,
+                                       is_truncate=is_truncate_trajs[ep_start_idx:ep_end_idx],
+                                       gamma=gamma, gae_lambda=gae_lambda))
 
-        return torch.cat(final_gae, dim=0)
+    return torch.cat(final_gae, dim=0)
