@@ -8,7 +8,7 @@ from diffusion_policy.common.replay_buffer import ReplayBuffer # Used for easy r
 from genesis_ILDP.dataset.sampler import (
     SequenceSampler, get_val_mask, downsample_mask)
 from diffusion_policy.model.common.normalizer import LinearNormalizer
-from diffusion_policy.common.normalize_util import get_image_range_normalizer
+from diffusion_policy.common.normalize_util import get_image_range_normalizer, get_imagenet_normalizer
 
 from genesis_ILDP.dataset.base_dataset import BaseImageDataset
 import matplotlib.pyplot as plt
@@ -23,7 +23,8 @@ class PushTImageDataset(BaseImageDataset):
             seed=42,
             val_ratio=0.0,
             max_train_episodes=None,
-            workspace_limits=None  # Add workspace limits parameter
+            workspace_limits=None,  # Add workspace limits parameter
+            image_normalizer: str = "range"  # "range" ([-1,1]) or "imagenet"
             ):
 
         super().__init__()
@@ -65,6 +66,7 @@ class PushTImageDataset(BaseImageDataset):
         self.pad_before = pad_before
         self.pad_after = pad_after
         self.zarr_path = zarr_path
+        self.image_normalizer = image_normalizer
 
     def get_validation_dataset(self):
         val_set = copy.copy(self)
@@ -108,7 +110,12 @@ class PushTImageDataset(BaseImageDataset):
             normalizer.fit(data=data, last_n_dims=1, mode=mode, **kwargs)
 
         if use_image_normalizer:
-            normalizer['image'] = get_image_range_normalizer()
+            if self.image_normalizer == "imagenet":
+                normalizer['image'] = get_imagenet_normalizer()
+            elif self.image_normalizer == "range":
+                normalizer['image'] = get_image_range_normalizer()
+            else:
+                raise ValueError(f"Unknown image_normalizer option: {self.image_normalizer}")
 
         return normalizer
 
@@ -155,7 +162,7 @@ class PushTImageDataset(BaseImageDataset):
 
     def _sample_to_data(self, sample):
         agent_pos = sample['state'][:,:2].astype(np.float32) # (agent_posx2, block_posex3)
-        image = np.moveaxis(sample['img'],-1,1)/255
+        image = np.moveaxis(sample['img'],-1,1)/255 # move channel to the second dimension 
 
         data = {
             'obs': {
@@ -261,7 +268,7 @@ def test():
 
     print("action sequence:  ", dataset.__getitem__(10)['action'])
     # print("agent_pos sequence:  ", dataset.__getitem__(0)['obs']['agent_pos'])
-    print("imgs dim: ", dataset.__getitem__(0)['obs']['image'].shape)
+    print("imgs range[", torch.max(dataset.__getitem__(0)['obs']['image']), ", ", torch.min(dataset.__getitem__(0)['obs']['image']))
     normalizer = dataset.get_normalizer(mode='limits')
 
     # print("normalizer stat: \n", normalizer.get_input_stats()['action'], normalizer.get_output_stats())

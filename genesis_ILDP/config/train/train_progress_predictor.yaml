@@ -1,0 +1,82 @@
+_target_: genesis_ILDP.workspace.train_progress_predictor_workspace.TrainProgressPredictorWorkspace
+
+exp_name: "progress_predictor_vit"
+task_name: progress_predictor
+name: train_progress_predictor
+
+shape_meta:
+  image:
+    shape: [3, 96, 96]
+    type: rgb
+
+# Optional: plug in the same vision backbone used by action prediction.
+# Leave as null to use the default ViT defined in `model`.
+vision_encoder: null
+#   _target_: genesis_ILDP.model.vision.cnn_encoding.img_encoding_cnn
+#   in_channels: 3
+#   encoded_dim: 512
+#   backbone: 'resnet18'
+#   pretrained: false
+#   use_spatial_softmax: false
+#   input_image_shape: ${shape_meta.image.shape}[1:]
+#   dropout: 0.0
+
+model:
+  _target_: genesis_ILDP.model.discriminator.stage_discriminator.StageDiscriminator
+  img_size: 96
+  patch_size: 8
+  in_channels: 3
+  output_mlp_hidden: [256, 128]
+  emb_dim: 256
+  num_heads: 4
+  depth: 4
+  use_cls_token: false
+  hidden_activation: ReLU
+  out_activation: Sigmoid
+  pool: mean
+  freeze_encoder: false
+
+task:
+  dataset:
+    _target_: genesis_ILDP.dataset.progress_image_dataset.ProgressImageDataset
+    zarr_path: ../data/train_data/pusht/pusht_1027_cleaned.zarr
+    seed: 42
+    val_ratio: 0.1
+    max_train_episodes: null
+    use_image_normalizer: true
+
+dataloader:
+  batch_size: ${training.batch_size}
+  shuffle: true
+  num_workers: 4
+  pin_memory: true
+  drop_last: false
+
+val_dataloader:
+  batch_size: ${training.batch_size}
+  shuffle: false
+  num_workers: 2
+  pin_memory: true
+  drop_last: false
+
+training:
+  device: cuda:0
+  seed: 42
+  num_epochs: 50
+  batch_size: 256
+  log_every: 50
+  checkpoint_every: 5
+  grad_clip_norm: 1.0
+  use_amp: false
+  resume: false
+  tqdm_disable: false
+
+optimizer:
+  vit:
+    _target_: torch.optim.Adam
+    lr: 1.0e-4
+    weight_decay: 0.01
+  mlp:
+    _target_: torch.optim.Adam
+    lr: 1.0e-3
+    weight_decay: 0.0

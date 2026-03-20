@@ -1,0 +1,30 @@
+_target_: genesis_ILDP.workspace.train_action_diffusion_image_workspace.TrainActionDiffusionImageWorkspace
+
+defaults:
+  - train_action_diffusion_pusht_image  # inherit base config
+
+# Override/extend as needed
+
+progress_predictor:
+  enable: true
+  freeze: true
+  ckpt_path: null  # set to a pretrained StageDiscriminator ckpt to load
+  model:
+    _target_: genesis_ILDP.model.discriminator.stage_discriminator.StageDiscriminator
+    img_size: 96
+    patch_size: 8
+    in_channels: 3
+    output_mlp_hidden: [256, 128]
+    emb_dim: 256
+    num_heads: 4
+    depth: 4
+    use_cls_token: false
+    hidden_activation: ReLU
+    out_activation: Sigmoid
+    pool: mean
+    freeze_encoder: true
+
+task:
+  env_runner:
+    progress_threshold: 0.97
+    progress_min_steps: 1

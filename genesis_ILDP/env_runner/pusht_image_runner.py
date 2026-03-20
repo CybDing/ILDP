@@ -46,6 +46,9 @@ class PushTImageRunner(BaseImageRunner):
                  enable_render = False,
                  max_envs_running = 3,
                  done_ratio = 0.85,
+                 progress_predictor=None,
+                 progress_threshold=0.97,
+                 progress_min_steps=1,
                  episode_recording = False,
                  video_dir = None,
                  spawn_mode = 'uniform',
@@ -80,6 +83,9 @@ class PushTImageRunner(BaseImageRunner):
         self.env_seeds = None
         self.info = None
         self.done_ratio = done_ratio
+        self.progress_predictor = progress_predictor
+        self.progress_threshold = progress_threshold
+        self.progress_min_steps = progress_min_steps
         self.show_interactive_viewer = show_interactive_viewer
 
         # Initialize video manager with configurable directory
@@ -255,6 +261,31 @@ class PushTImageRunner(BaseImageRunner):
                     }
 
                 obs, reward, done, info = self.env.step(Active_action['action'])
+
+                # Optional early termination via progress predictor
+                if self.progress_predictor is not None:
+                    try:
+                        with torch.no_grad():
+                            imgs_raw = obs['image']
+                            # expect shape (envs, T, C, H, W) or (envs, C, H, W)
+                            if imgs_raw.dim() == 5:
+                                imgs_last = imgs_raw[:, -1]
+                            else:
+                                imgs_last = imgs_raw
+                            preds = self.progress_predictor(imgs_last.to(next(self.progress_predictor.parameters()).device))
+                            preds = preds.detach().cpu()
+                        for local_idx, env_idx in enumerate(active_envs_idx):
+                            if self.global_timestep >= self.progress_min_steps:
+                                if preds[local_idx] >= self.progress_threshold:
+                                    # mark as natural success
+                                    if isinstance(done, list):
+                                        done[env_idx] = 3
+                                    elif isinstance(done, torch.Tensor):
+                                        done[env_idx] = torch.tensor(3, device=done.device)
+                                    else:  # numpy
+                                        done[env_idx] = 3
+                    except Exception as e:
+                        print(f"[ProgressPredictor] warning: failed to compute progress ({e}); skipping this step")
 
                 if self.episode_recording:
                     for local_idx, env_idx in enumerate(active_envs_idx):

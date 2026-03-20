@@ -10,8 +10,7 @@ class SeedManager:
 
     def __init__(self, base_seed: int = 42):
         self.base_seed = base_seed
-        self._generator = None
-        self._device = None
+        self._generators = dict()  # device -> torch.Generator
 
     def set_global_seed(self, deterministic: bool = False):
         """Set all global RNG seeds."""
@@ -40,21 +39,25 @@ class SeedManager:
                 torch.backends.cudnn.benchmark = True
 
     def get_generator(self, device: Optional[torch.device] = None) -> torch.Generator:
-        """Get or create a torch Generator for the specified device."""
+        """
+        Get or create a torch Generator for the specified device.
+        Keeps one generator per device to avoid device-mismatch errors.
+        """
         if device is None:
             device = torch.device('cpu')
         elif not isinstance(device, torch.device):
             device = torch.device(device)
 
-        if self._generator is None or self._device != device:
+        key = (device.type, device.index)
+        if key not in self._generators:
             try:
-                self._generator = torch.Generator(device=device)
+                gen = torch.Generator(device=device)
             except TypeError:
-                self._generator = torch.Generator(device=device.type if device.type in ("cuda", "mps") else "cpu")
-            self._generator.manual_seed(self.base_seed)
-            self._device = device
-
-        return self._generator
+                # Some backends only allow 'cpu' or 'cuda'; fall back gracefully
+                gen = torch.Generator(device=device.type if device.type in ("cuda", "mps") else "cpu")
+            gen.manual_seed(self.base_seed)
+            self._generators[key] = gen
+        return self._generators[key]
 
     def worker_init_fn(self, worker_id: int, strategy: str = 'offset'):
         """DataLoader worker initialization function."""

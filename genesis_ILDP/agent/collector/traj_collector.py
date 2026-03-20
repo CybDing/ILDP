@@ -9,23 +9,23 @@ import hydra
 class TrajCollector:
 
     def __init__(self, eval_cfg, seed=50000, n_episodes=200, max_step=500):
-        self.workspace = EvalActionDiffusionImageWorkspace \
-                        (eval_cfg, output_dir=None, enable_render=False)
-        self.policy = None
-        self.env_runner = None
-        self.seed = seed # the initial seed which the collector is gonna to collect for the first time. 
+        # self.workspace = EvalActionDiffusionImageWorkspace \
+        #                 (eval_cfg, output_dir=None, enable_render=False)
+        # self.policy = None
+        # self.env_runner = None
+        # self.seed = seed # the initial seed which the collector is gonna to collect for the first time. 
 
-        # self.workspace.cfg is the checkpoint cfg
-        checkpoint_cfg = copy.deepcopy(self.workspace.cfg)
+        # # self.workspace.cfg is the checkpoint cfg
+        # checkpoint_cfg = copy.deepcopy(self.workspace.cfg)
 
-        from genesis_ILDP.dataset.base_dataset import BaseImageDataset
-        dataset: BaseImageDataset = hydra.utils.instantiate(checkpoint_cfg.task.dataset)
-        normalizer = dataset.get_normalizer()
+        # from genesis_ILDP.dataset.base_dataset import BaseImageDataset
+        # dataset: BaseImageDataset = hydra.utils.instantiate(checkpoint_cfg.task.dataset)
+        # normalizer = dataset.get_normalizer()
 
-        self.workspace.model.set_normalizer(normalizer)
+        # self.workspace.model.set_normalizer(normalizer)
 
-        if self.policy is None: 
-            self.policy = self.workspace.model
+        # if self.policy is None: 
+        #     self.policy = self.workspace.model
         
         if self.env_runner is None:
             checkpoint_cfg.env_runner.n_train = 0

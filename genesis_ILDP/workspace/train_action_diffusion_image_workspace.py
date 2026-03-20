@@ -20,6 +20,7 @@ from typing import Optional
 
 from genesis_ILDP.workspace.base_workspace import BaseWorkspace
 from genesis_ILDP.policy.pretrain.action_diffusion_image_policy import ActionDiffusionImagePolicy
+from genesis_ILDP.model.discriminator.stage_discriminator import StageDiscriminator
 from genesis_ILDP.dataset.base_dataset import BaseImageDataset
 from genesis_ILDP.env_runner.base_image_runner import BaseImageRunner
 from genesis_ILDP.utils.pytorch_util import dict_apply, optimizer_to
@@ -49,7 +50,9 @@ class TrainActionDiffusionImageWorkspace(BaseWorkspace):
 
         self.seed_manager = SeedManager(base_seed=seed)
         self.seed_manager.set_global_seed(deterministic=deterministic)
-        self.generator = self.seed_manager.get_generator(device)
+        # Separate generators: CPU for DataLoader shuffling, device for sampling
+        self.data_generator = self.seed_manager.get_generator(torch.device('cpu'))
+        self.sample_generator = self.seed_manager.get_generator(device)
 
         self.use_generator = cfg.training.get('use_generator', True)
         self.worker_init_fn = lambda worker_id: self.seed_manager.worker_init_fn(worker_id, worker_seed_strategy)
@@ -59,6 +62,24 @@ class TrainActionDiffusionImageWorkspace(BaseWorkspace):
         self.ema_model: ActionDiffusionImagePolicy = None
         if cfg.training.use_ema:
             self.ema_model = copy.deepcopy(self.model)
+
+        # Optional progress predictor (pretrained or to be fine-tuned separately)
+        self.progress_predictor: StageDiscriminator | None = None
+        pp_cfg = cfg.get('progress_predictor', None)
+        if pp_cfg is not None and pp_cfg.get('enable', False):
+            self.progress_predictor = hydra.utils.instantiate(pp_cfg.model)
+            if pp_cfg.get('ckpt_path', None):
+                state = torch.load(pp_cfg.ckpt_path, map_location='cpu')
+                # allow both full payload and bare state_dict
+                if isinstance(state, dict) and 'state_dict' in state:
+                    state = state['state_dict']
+                self.progress_predictor.load_state_dict(state)
+                print(f"Loaded progress predictor weights from {pp_cfg.ckpt_path}")
+            self.progress_predictor.to(device)
+            if pp_cfg.get('freeze', True):
+                for p in self.progress_predictor.parameters():
+                    p.requires_grad = False
+            print("Progress predictor initialized for runner.")
 
         self.optimizer = hydra.utils.instantiate(cfg.optimizer, params=self.model.parameters())
         self.global_step = 0
@@ -98,9 +119,9 @@ class TrainActionDiffusionImageWorkspace(BaseWorkspace):
                 return x.to(device, non_blocking=True)
             return x
         
-        # DataLoader: attach device-matched generator when shuffling
+        # DataLoader: use CPU generator when shuffling to avoid device mismatch
         if dataloader_kwargs.get('shuffle', False):
-            dataloader_kwargs['generator'] = self.generator
+            dataloader_kwargs['generator'] = self.data_generator
 
         train_dataloader = DataLoader(
             dataset,
@@ -114,6 +135,9 @@ class TrainActionDiffusionImageWorkspace(BaseWorkspace):
         val_dataset = dataset.get_validation_dataset()
 
         # Validation DataLoader (same as train)
+        if val_dataloader_kwargs.get('shuffle', False) and self.use_generator:
+            val_dataloader_kwargs['generator'] = self.data_generator
+
         val_dataloader = DataLoader(
             val_dataset,
             worker_init_fn=self.worker_init_fn if val_dataloader_kwargs.get('num_workers', 0) > 0 else None,
@@ -153,6 +177,23 @@ class TrainActionDiffusionImageWorkspace(BaseWorkspace):
                     output_dir=self.output_dir)
                 assert isinstance(env_runner, BaseImageRunner)
                 print(f"Environment runner configured: {type(env_runner).__name__}")
+
+                # attach optional progress predictor for early-stop evaluation
+                if hasattr(env_runner, 'progress_predictor'):
+                    env_runner.progress_predictor = self.progress_predictor
+                    env_runner.progress_threshold = cfg.task.env_runner.get('progress_threshold', env_runner.progress_threshold)
+                    env_runner.progress_min_steps = cfg.task.env_runner.get('progress_min_steps', env_runner.progress_min_steps)
+
+                # Try to align environment seeds with training seed for reproducibility
+                if hasattr(env_runner, "_update_seeds"):
+                    env_runner._update_seeds(
+                        seed_train=cfg.task.env_runner.get('train_start_seed', None),
+                        seed_test=cfg.task.env_runner.get('test_start_seed', None),
+                    )
+                elif hasattr(env_runner, "seed_train") and hasattr(env_runner, "seed_test"):
+                    env_runner.seed_train = cfg.task.env_runner.get('train_start_seed', env_runner.seed_train)
+                    env_runner.seed_test = cfg.task.env_runner.get('test_start_seed', env_runner.seed_test)
+
             except Exception as e:
                 print(f"Warning: Could not initialize env_runner: {e}")
                 print("Training will continue without environment evaluation")
@@ -277,7 +318,7 @@ class TrainActionDiffusionImageWorkspace(BaseWorkspace):
                     try:
                         print(f"Running rollout evaluation at epoch {self.epoch}")
 
-                        eval_generator = self.seed_manager.get_generator(device) if self.use_generator else None
+                        eval_generator = self.sample_generator if self.use_generator else None
 
                         runner_log = env_runner.run(policy, generator=eval_generator, wandb_run=wandb_run)
                         # runner_log is JSON-safe (no videos), merge into step_log
@@ -325,7 +366,7 @@ class TrainActionDiffusionImageWorkspace(BaseWorkspace):
                                 'agent_pos': obs_dict['agent_pos'][:, :n_obs_steps]
                             }
 
-                            sample_generator = self.seed_manager.get_generator(device) if self.use_generator else None
+                            sample_generator = self.sample_generator if self.use_generator else None
 
                             result = policy.predict_action(obs_dict_sliced, generator=sample_generator)
                             pred_action = result['action_pred']

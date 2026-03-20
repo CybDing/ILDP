@@ -194,9 +194,10 @@ class ActionDiffusionImagePolicy(BaseImagePolicy):
         imgs, agent_pos = self._preprocess_obs(imgs, agent_pos)
 
         device = next(self.parameters()).device
-        
-        # if imgs.max() > 1.0: 
-        imgs = imgs / 255.0 # fix imgs input range
+        # Normalize raw uint8 inputs only; leave already scaled tensors untouched
+        max_val = imgs.max().item()
+        if max_val > 1.5: 
+            imgs = imgs / 255.0  # fix imgs input range if raw uint8
 
         # Generator device must match tensor device (MPS/CUDA/CPU)
         if generator is not None:
