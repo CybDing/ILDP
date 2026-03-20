@@ -2,7 +2,7 @@ import torch
 import torch.nn as nn
 
 from genesis_ILDP.policy.base_image_policy import BaseImagePolicy
-from genesis_ILDP.model.rl.critic import Critic
+from genesis_ILDP.model.rl.critic import BaseCritic
 from genesis_ILDP.agent.rl_agent.base_agent import BaseAgent
 
 class PPODiffusionAgent(BaseAgent): 
@@ -45,7 +45,7 @@ class PPODiffusionAgent(BaseAgent):
 
         # the decaying weight from diff_step idx 0 - 1 (diff_steps + 1 points)
         if self.weight_advantage_ploss is None: 
-            idx_normed = torch.arange(self.max_FTdiff_idx + 1) / self.max_FTdiff_idx 
+            idx_normed = torch.arange(self.max_FTdiff_idx + 1, device=raw_ratio.device) / self.max_FTdiff_idx
             self.clip_rate_ploss = self.clip_rate_ploss if self.clip_rate_ploss > 0 else 0
             self.weight_advantage_ploss = self.clip_base_ploss * torch.exp(-self.clip_rate_ploss * idx_normed)
         
@@ -112,9 +112,9 @@ class PPODiffusionAgent(BaseAgent):
                                               isNorm_obs = False, # unnormalized obs collected 
                                               )
         # --- Policy Gradient loss ---
-        clipped_ratio = self._clip_sigratio(raw_ratio=new_logprob/old_logprob)
-        advantage_clipped = torch.clamp(advantage, min=torch.quantile(advantage, self.clip_advantage_lower_quantile, dim=0), 
-                                        max=torch.quantile(advantage, self.clip_advantage_upper_quantile), dim=0)
+        clipped_ratio = self._clip_sigratio(raw_ratio=new_logprob/old_logprob, denoising_idx=denoising_idx)
+        advantage_clipped = torch.clamp(advantage, min=torch.quantile(advantage, self.clip_advantage_lower_quantile, dim=0),
+                                        max=torch.quantile(advantage, self.clip_advantage_upper_quantile, dim=0))
         advantage_decayed = advantage_clipped * torch.Tensor([self.advantage_decay_coeff ** idx for idx in denoising_idx])
 
         

@@ -11,30 +11,30 @@ def calculate_GAE(reward_trajs, value_trajs, is_truncate, gamma, gae_lambda):
     """
     
     delta = reward_trajs + gamma * value_trajs[1:] * is_truncate - value_trajs[:-1]
-    gae_advantage = list()
+    gae_advantage = torch.zeros_like(reward_trajs)
     temp_value = 0
-    for i in range(len(reward_trajs)):
-        temp_value = temp_value + (gae_lambda ** i)* delta[-i]
+    for i in reversed(range(len(reward_trajs))):
+        temp_value = delta[i] + gamma * gae_lambda * is_truncate[i] * temp_value
         gae_advantage[i] = temp_value
-    
-    gae_advantage[1::] = gae_advantage[-1:-1:]
 
     return gae_advantage
 
 
-def calculate_full_batch_gae(self, value_trajs, last_obs_value, 
-                                 reward_trajs, is_truncate_trajs, episode_ends_trajs)-> torch.tensor:
-       
+def calculate_full_batch_gae(value_trajs, last_obs_value,
+                             reward_trajs, is_truncate_trajs, episode_ends_trajs,
+                             gamma, gae_lambda) -> torch.Tensor:
+
         idx = torch.where(episode_ends_trajs == 1)[0]
         idx = torch.cat([torch.tensor([0], device=idx.device, dtype=idx.dtype), idx], dim=0)
         final_gae = list()
         for i in range(len(idx) - 1):
-           ep_start_idx = episode_ends_trajs[i]
-           ep_end_idx = episode_ends_trajs[i+1] + 1 # since the episode_ends save for the last step
+           ep_start_idx = idx[i]
+           ep_end_idx = idx[i+1] + 1
 
-           full_value_trajs = torch.cat([value_trajs[idx[ep_start_idx:ep_end_idx]], last_obs_value[i].unsqueeze(0)], dim=0)
-           final_gae.append(calculate_GAE(value_trajs=full_value_trajs, rewards_trajs=reward_trajs[ep_start_idx:ep_end_idx],
-                                           is_truncate=is_truncate_trajs[ep_start_idx:ep_end_idx], 
-                                           gamma=self.gamma, gae_lambda=self.gae_lambda)) 
+           full_value_trajs = torch.cat([value_trajs[ep_start_idx:ep_end_idx], last_obs_value[i].unsqueeze(0)], dim=0)
+           final_gae.append(calculate_GAE(reward_trajs=reward_trajs[ep_start_idx:ep_end_idx],
+                                           value_trajs=full_value_trajs,
+                                           is_truncate=is_truncate_trajs[ep_start_idx:ep_end_idx],
+                                           gamma=gamma, gae_lambda=gae_lambda))
 
-        return final_gae 
+        return torch.cat(final_gae, dim=0)

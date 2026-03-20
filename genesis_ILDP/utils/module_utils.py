@@ -4,10 +4,11 @@ import torch.optim as optim
 from typing import Type
 
 ModuleDict = {
-    'relu': nn.ReLU(), 
-    'silu': nn.SiLU(), 
-    'sigmoid': nn.Sigmoid(), 
-    'batchnorm': nn.BatchNorm1d() 
+    'relu': nn.ReLU,
+    'silu': nn.SiLU,
+    'sigmoid': nn.Sigmoid,
+    'batchnorm': nn.BatchNorm1d,
+    None: None,
 }
 ParamType = Type[nn.Parameter]
 

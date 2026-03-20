@@ -26,16 +26,16 @@ class BaseAgent:
         critic_config = self.optimizer_config['critic']
         actor_config = self.optimizer_config['actor']
 
-        self.p_optimizer = get_optimizer(type=actor_config['type'], 
-                                         params=self.actor.parameters(), 
-                                         lr=self.actor_config['lr'], 
-                                         weight_decay=self.actor_config['weight_decay']
+        self.p_optimizer = get_optimizer(type=actor_config['type'],
+                                         params=self.actor.parameters(),
+                                         lr=actor_config['lr'],
+                                         weight_decay=actor_config['weight_decay']
                                          )
-        
-        self.v_optimizer = get_optimizer(type=critic_config['type'], 
-                                         params=self.critic.parameters(), 
-                                         lr=self.critic_config['lr'], 
-                                         weight_decay=self.critic_config['weight_decay']
+
+        self.v_optimizer = get_optimizer(type=critic_config['type'],
+                                         params=self.critic.parameters(),
+                                         lr=critic_config['lr'],
+                                         weight_decay=critic_config['weight_decay']
                                          )
     def train_step(self, *args):
         raise NotImplementedError

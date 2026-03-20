@@ -13,7 +13,7 @@ import os
 import pathlib
 import argparse
 import hydra
-from omegaconf import OmegaConfimport
+from omegaconf import OmegaConf
 import torch
 import dill
 import copy
